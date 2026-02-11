@@ -57,14 +57,14 @@ export async function saveSwap(passphrase, swap) {
 }
 
 /**
- * Update a swap record by houdiniId
+ * Update a swap record by txId (transaction signature)
  * @param {string} passphrase
- * @param {string} houdiniId
+ * @param {string} txId — transaction signature
  * @param {object} updates — fields to merge
  */
-export async function updateSwap(passphrase, houdiniId, updates) {
+export async function updateSwap(passphrase, txId, updates) {
     const existing = await getSwapHistory(passphrase)
-    const idx = existing.findIndex(s => s.houdiniId === houdiniId)
+    const idx = existing.findIndex(s => s.txId === txId)
     if (idx === -1) return null
 
     existing[idx] = { ...existing[idx], ...updates }
@@ -84,18 +84,18 @@ export async function exportSwapHistory(passphrase) {
     const records = await getSwapHistory(passphrase)
     if (records.length === 0) return
 
-    const headers = ['Date', 'Houdini ID', 'TX Signature', 'Source Wallet', 'Source Address',
-        'Destination', 'Amount Sent (SOL)', 'Amount Received (SOL)', 'Status']
+    const headers = ['Date', 'Transaction ID', 'Type', 'Source Wallet', 'Source Address',
+        'Destination', 'Amount (SOL)', 'Fee (SOL)', 'Status']
 
     const rows = records.map(r => [
         new Date(r.createdAt).toISOString(),
-        r.houdiniId || '',
-        r.txSignature || '',
+        r.txId || '',
+        r.type || 'transfer',
         r.sourceWallet?.name || '',
         r.sourceWallet?.address || '',
         r.destAddress || '',
-        r.amountIn ?? '',
-        r.amountOut ?? '',
+        r.amountSOL ?? '',
+        r.feeSOL ?? '',
         r.statusLabel || '',
     ])
 

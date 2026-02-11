@@ -7,11 +7,14 @@ export default defineConfig({
   plugins: [
     react(),
     nodePolyfills({
-      include: ['buffer'],
-      globals: { Buffer: true },
+      include: ['buffer', 'crypto', 'stream', 'path', 'process', 'vm', 'os', 'url', 'fs'],
+      globals: { Buffer: true, process: true },
     }),
   ],
   build: {
-    chunkSizeWarningLimit: 1500,
+    chunkSizeWarningLimit: 2500,
+  },
+  optimizeDeps: {
+    exclude: ['@lightprotocol/hasher.rs'],
   },
 })

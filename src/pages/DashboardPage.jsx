@@ -12,7 +12,7 @@ import {
     importBackup,
     sendSol,
 } from '../utils/walletService.js'
-import { getQuote, createExchange, getSwapStatus, SWAP_STATUS, isTerminalStatus } from '../utils/houdiniService.js'
+import { initPrivacyCash, shieldSol, unshieldSol, getPrivateBalance, lamportsToSol, PRIVACY_STATUS } from '../utils/privacyService.js'
 import { saveSwap, updateSwap, getSwapHistory, exportSwapHistory } from '../utils/swapHistory.js'
 import {
     Wallet,
@@ -178,12 +178,13 @@ export default function DashboardPage() {
     // ── Swap flow state ──
     const [swapAmount, setSwapAmount] = useState('')
     const [manualDestAddr, setManualDestAddr] = useState('')
-    const [quoteData, setQuoteData] = useState(null)      // { amountIn, amountOut, min, max, duration }
+    const [quoteData, setQuoteData] = useState(null)      // { amountIn, estimatedFee }
     const [quoteLoading, setQuoteLoading] = useState(false)
     const [quoteError, setQuoteError] = useState('')
-    const [activeSwap, setActiveSwap] = useState(null)     // { houdiniId, senderAddress, status, statusLabel, ... }
-    const [swapStep, setSwapStep] = useState('idle')       // idle | quoting | confirming | sending | polling | done | error
+    const [activeSwap, setActiveSwap] = useState(null)     // { txId, statusLabel, amountSOL, feeSOL, ... }
+    const [swapStep, setSwapStep] = useState('idle')       // idle | confirming | shielding | unshielding | done | error
     const [swapError, setSwapError] = useState('')
+    const [privacyStatus, setPrivacyStatus] = useState(PRIVACY_STATUS.IDLE)  // detailed sub-step
     const swapPollRef = useRef(null)
 
     // ── SOL price state ──
@@ -824,19 +825,17 @@ export default function DashboardPage() {
         setQuoteData(null)
 
         try {
-            const data = await getQuote(amt)
-            if (data.min && amt < data.min) {
-                setQuoteError(`Minimum amount is ${data.min} SOL`)
+            // Privacy Cash has no quote API — we estimate the ~2% relayer fee
+            const estimatedFee = amt * 0.02 + 0.0035  // ~2% + rent fee
+            const amountOut = amt - estimatedFee
+            if (amountOut <= 0) {
+                setQuoteError('Amount too small to cover relayer fees')
                 return
             }
-            if (data.max && amt > data.max) {
-                setQuoteError(`Maximum amount is ${data.max} SOL`)
-                return
-            }
-            setQuoteData(data)
+            setQuoteData({ amountIn: amt, amountOut: parseFloat(amountOut.toFixed(6)), estimatedFee: parseFloat(estimatedFee.toFixed(6)) })
             setSwapStep('confirming')
         } catch (err) {
-            setQuoteError(err.message || 'Failed to get quote')
+            setQuoteError(err.message || 'Failed to estimate fees')
         } finally {
             setQuoteLoading(false)
         }
@@ -847,79 +846,59 @@ export default function DashboardPage() {
         const destAddr = getDestinationAddress()
         if (!amt || !destAddr || !quoteData) return
 
-        setSwapStep('sending')
+        setSwapStep('shielding')
         setSwapError('')
 
         try {
-            // 1. Create HoudiniSwap order
-            const order = await createExchange(amt, destAddr)
-
-            setActiveSwap(order)
-
-            // 2. Sign and send SOL to deposit address in browser
+            // 1. Get source wallet secret key
             const sourceWallet = fullWalletsRef.current.find(w => w.id === sourceWallets[0]?.id)
             if (!sourceWallet?.secretKey) throw new Error('Source wallet key not found')
 
-            const { signature } = await sendSol(sourceWallet.secretKey, order.senderAddress, amt)
+            // 2. Initialize Privacy Cash client
+            const rpcUrl = import.meta.env.VITE_SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com'
+            const client = initPrivacyCash(rpcUrl, sourceWallet.secretKey)
 
-            // 3. Save to swap history
+            // 3. Shield (deposit) SOL into privacy pool
+            setActiveSwap({ statusLabel: 'Shielding SOL...', amountSOL: amt })
+            const shieldResult = await shieldSol(client, amt, setPrivacyStatus)
+
+            setActiveSwap(prev => ({ ...prev, shieldTx: shieldResult.tx, statusLabel: 'Unshielding to destination...' }))
+
+            // 4. Unshield (withdraw) SOL to destination address
+            setSwapStep('unshielding')
+            const unshieldResult = await unshieldSol(client, amt, destAddr, setPrivacyStatus)
+
+            const feeSOL = lamportsToSol(unshieldResult.fee_in_lamports || 0)
+            const receivedSOL = lamportsToSol(unshieldResult.amount_in_lamports || 0)
+
+            // 5. Save to swap history
             await saveSwap(passphrase, {
-                houdiniId: order.houdiniId,
-                txSignature: signature,
+                txId: unshieldResult.tx,
+                type: 'private_transfer',
                 sourceWallet: { name: sourceWallet.name, address: sourceWallet.address },
                 destAddress: destAddr,
-                amountIn: order.inAmount,
-                amountOut: order.outAmount,
-                status: order.status,
-                statusLabel: 'Deposited',
+                amountSOL: amt,
+                feeSOL,
+                statusLabel: 'Complete',
             })
 
-            setActiveSwap(prev => ({ ...prev, txSignature: signature }))
-            setSwapStep('polling')
+            setActiveSwap(prev => ({
+                ...prev,
+                txId: unshieldResult.tx,
+                statusLabel: 'Complete',
+                feeSOL,
+                receivedSOL,
+                isPartial: unshieldResult.isPartial,
+            }))
+            setSwapStep('done')
 
-            // 4. Start polling status
-            pollSwapStatus(order.houdiniId)
+            // 6. Refresh wallet balances
+            fetchLiveBalances()
 
         } catch (err) {
-            setSwapError(err.message || 'Swap failed')
+            setSwapError(err.message || 'Private transfer failed')
             setSwapStep('error')
         }
-    }
-
-    const pollSwapStatus = (houdiniId) => {
-        if (swapPollRef.current) clearInterval(swapPollRef.current)
-
-        swapPollRef.current = setInterval(async () => {
-            try {
-                const status = await getSwapStatus(houdiniId)
-                setActiveSwap(prev => ({
-                    ...prev,
-                    status: status.status,
-                    statusLabel: status.statusLabel,
-                }))
-
-                // Update swap history
-                await updateSwap(passphrase, houdiniId, {
-                    status: status.status,
-                    statusLabel: status.statusLabel,
-                    completedAt: isTerminalStatus(status.status) ? Date.now() : undefined,
-                })
-
-                if (isTerminalStatus(status.status)) {
-                    clearInterval(swapPollRef.current)
-                    swapPollRef.current = null
-                    setSwapStep(status.status === SWAP_STATUS.FINISHED ? 'done' : 'error')
-                    if (status.status === SWAP_STATUS.FINISHED) {
-                        // Refresh wallet balances
-                        const data = fullWalletsRef.current
-                        const updated = await refreshWalletData(getPublicData(data))
-                        setWallets(updated)
-                    }
-                }
-            } catch (err) {
-                console.warn('Status poll error:', err)
-            }
-        }, 10000) // poll every 10 seconds
     }
 
     const resetSwap = () => {
@@ -930,6 +909,7 @@ export default function DashboardPage() {
         setActiveSwap(null)
         setSwapStep('idle')
         setSwapError('')
+        setPrivacyStatus(PRIVACY_STATUS.IDLE)
         setSourceWallets([])
         setDestWallets([])
         if (swapPollRef.current) {
@@ -938,7 +918,7 @@ export default function DashboardPage() {
         }
     }
 
-    // Cleanup polling on unmount
+    // Cleanup on unmount
     useEffect(() => {
         return () => {
             if (swapPollRef.current) clearInterval(swapPollRef.current)
@@ -1908,26 +1888,24 @@ export default function DashboardPage() {
                                             </span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <span style={{ fontSize: '11px', color: t.textDim }}>You Receive</span>
+                                            <span style={{ fontSize: '11px', color: t.textDim }}>Recipient Gets</span>
                                             <span style={{ fontSize: '13px', fontWeight: 700, color: t.green, fontFamily: "'JetBrains Mono', monospace" }}>
                                                 ≈ {quoteData.amountOut} SOL
                                             </span>
                                         </div>
                                         <div style={{ height: '1px', background: t.border }} />
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <span style={{ fontSize: '10px', color: t.textMuted }}>Privacy Fee</span>
+                                            <span style={{ fontSize: '10px', color: t.textMuted }}>Relayer Fee (est.)</span>
                                             <span style={{ fontSize: '11px', color: t.textDim, fontFamily: "'JetBrains Mono', monospace" }}>
-                                                {(quoteData.amountIn - quoteData.amountOut).toFixed(6)} SOL
+                                                ~{quoteData.estimatedFee} SOL
                                             </span>
                                         </div>
-                                        {quoteData.duration && (
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                <span style={{ fontSize: '10px', color: t.textMuted }}>Estimated Time</span>
-                                                <span style={{ fontSize: '11px', color: t.textDim, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                    <Clock size={10} /> ~{quoteData.duration} min
-                                                </span>
-                                            </div>
-                                        )}
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                            <span style={{ fontSize: '10px', color: t.textMuted }}>Method</span>
+                                            <span style={{ fontSize: '11px', color: t.accent, fontWeight: 600 }}>
+                                                ZK Privacy (on-chain)
+                                            </span>
+                                        </div>
                                     </div>
                                 )}
 
@@ -1987,34 +1965,34 @@ export default function DashboardPage() {
                                 </div>
                             </>
                         ) : (
-                            /* ── SWAP STATUS TRACKER ── */
+                            /* ── PRIVACY TRANSFER STATUS TRACKER ── */
                             <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
                                 {/* Status steps */}
                                 {(() => {
                                     const steps = [
-                                        { label: 'Created', key: 'created' },
-                                        { label: 'Sending SOL', key: 'sending' },
-                                        { label: 'Confirming', key: 'confirming' },
-                                        { label: 'Anonymizing', key: 'anonymizing' },
+                                        { label: 'Generating ZK Proof', key: 'proof' },
+                                        { label: 'Shielding SOL', key: 'shielding' },
+                                        { label: 'Unshielding to Destination', key: 'unshielding' },
+                                        { label: 'Confirming on-chain', key: 'confirming' },
                                         { label: 'Complete', key: 'complete' },
                                     ]
 
-                                    const statusNum = activeSwap?.status ?? -1
                                     let activeIdx = 0
-                                    if (swapStep === 'sending') activeIdx = 1
-                                    else if (statusNum === SWAP_STATUS.CONFIRMING) activeIdx = 2
-                                    else if (statusNum === SWAP_STATUS.EXCHANGING || statusNum === SWAP_STATUS.ANONYMIZING) activeIdx = 3
-                                    else if (statusNum === SWAP_STATUS.FINISHED) activeIdx = 4
-                                    else if (swapStep === 'polling') activeIdx = 2
+                                    if (privacyStatus === PRIVACY_STATUS.GENERATING_PROOF && swapStep === 'shielding') activeIdx = 0
+                                    else if (privacyStatus === PRIVACY_STATUS.SUBMITTING && swapStep === 'shielding') activeIdx = 1
+                                    else if (swapStep === 'unshielding' && privacyStatus === PRIVACY_STATUS.GENERATING_PROOF) activeIdx = 2
+                                    else if (swapStep === 'unshielding' && (privacyStatus === PRIVACY_STATUS.SUBMITTING || privacyStatus === PRIVACY_STATUS.CONFIRMING)) activeIdx = 3
+                                    else if (swapStep === 'done') activeIdx = 4
+                                    else if (swapStep === 'shielding') activeIdx = 0
+                                    else if (swapStep === 'unshielding') activeIdx = 2
 
-                                    const isFailed = swapStep === 'error' || [SWAP_STATUS.EXPIRED, SWAP_STATUS.FAILED, SWAP_STATUS.REFUNDED].includes(statusNum)
+                                    const isFailed = swapStep === 'error'
 
                                     return (
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
                                             {steps.map((step, i) => {
                                                 const isComplete = !isFailed && i < activeIdx
                                                 const isActive = !isFailed && i === activeIdx
-                                                const isPending = !isFailed && i > activeIdx
 
                                                 return (
                                                     <div key={step.key} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
@@ -2084,30 +2062,28 @@ export default function DashboardPage() {
                                         gap: '8px',
                                         fontSize: '11px',
                                     }}>
-                                        {activeSwap.inAmount != null && (
+                                        {activeSwap.amountSOL != null && (
                                             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                                 <span style={{ color: t.textDim }}>Amount</span>
                                                 <span style={{ color: t.text, fontFamily: "'JetBrains Mono', monospace" }}>
-                                                    {activeSwap.inAmount} → {activeSwap.outAmount} SOL
+                                                    {activeSwap.amountSOL} SOL
                                                 </span>
                                             </div>
                                         )}
-                                        {activeSwap.houdiniId && (
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                <span style={{ color: t.textDim }}>Order ID</span>
-                                                <button onClick={() => { navigator.clipboard.writeText(activeSwap.houdiniId); setCopiedField('houdini') }}
-                                                    style={{ ...iconBtnStyle, fontSize: '10px', color: t.accent, fontFamily: "'JetBrains Mono', monospace", display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                    {shortAddr(activeSwap.houdiniId)}
-                                                    {copiedField === 'houdini' ? <Check size={10} /> : <Copy size={10} />}
-                                                </button>
+                                        {activeSwap.feeSOL != null && (
+                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                <span style={{ color: t.textDim }}>Relayer Fee</span>
+                                                <span style={{ color: t.textSec, fontFamily: "'JetBrains Mono', monospace" }}>
+                                                    {activeSwap.feeSOL.toFixed(6)} SOL
+                                                </span>
                                             </div>
                                         )}
-                                        {activeSwap.txSignature && (
+                                        {activeSwap.txId && (
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                                 <span style={{ color: t.textDim }}>TX Sig</span>
-                                                <button onClick={() => { navigator.clipboard.writeText(activeSwap.txSignature); setCopiedField('txsig') }}
+                                                <button onClick={() => { navigator.clipboard.writeText(activeSwap.txId); setCopiedField('txsig') }}
                                                     style={{ ...iconBtnStyle, fontSize: '10px', color: t.accent, fontFamily: "'JetBrains Mono', monospace", display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                    {shortAddr(activeSwap.txSignature)}
+                                                    {shortAddr(activeSwap.txId)}
                                                     {copiedField === 'txsig' ? <Check size={10} /> : <Copy size={10} />}
                                                 </button>
                                             </div>
@@ -2116,8 +2092,8 @@ export default function DashboardPage() {
                                             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                                 <span style={{ color: t.textDim }}>Status</span>
                                                 <span style={{
-                                                    color: activeSwap.status === SWAP_STATUS.FINISHED ? t.green
-                                                        : [SWAP_STATUS.EXPIRED, SWAP_STATUS.FAILED].includes(activeSwap.status) ? '#DC3545'
+                                                    color: swapStep === 'done' ? t.green
+                                                        : swapStep === 'error' ? '#DC3545'
                                                             : t.accent,
                                                     fontWeight: 600,
                                                 }}>
