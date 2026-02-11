@@ -161,7 +161,7 @@ export async function fetchBalances(addresses) {
     // Batch sequentially to avoid rate limits
     for (const addr of addresses) {
         try {
-            const result = await rpcCall('getBalance', [addr])
+            const result = await rpcCall('getBalance', [addr, { commitment: 'confirmed' }])
             results[addr] = (result?.value ?? 0) / 1e9 // lamports → SOL
         } catch (err) {
             console.warn(`Failed to fetch balance for ${addr}:`, err.message)

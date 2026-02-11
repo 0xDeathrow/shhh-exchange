@@ -240,6 +240,15 @@ export default function DashboardPage() {
         setBalanceLoading(false)
     }
 
+    // ── Auto-poll balances every 15 seconds ──
+    useEffect(() => {
+        if (!passphrase) return
+        const interval = setInterval(() => {
+            fetchLiveBalances()
+        }, 15000)
+        return () => clearInterval(interval)
+    }, [passphrase])
+
     // ── Persist helper ──
     const persistWallets = useCallback(async (updatedFull) => {
         fullWalletsRef.current = updatedFull
