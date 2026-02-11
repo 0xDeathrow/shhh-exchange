@@ -11,4 +11,7 @@ export default defineConfig({
       globals: { Buffer: true },
     }),
   ],
+  build: {
+    chunkSizeWarningLimit: 1500,
+  },
 })
