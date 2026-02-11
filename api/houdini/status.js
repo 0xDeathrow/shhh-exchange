@@ -28,8 +28,8 @@ export default async function handler(req, res) {
     if (req.method === 'OPTIONS') return res.status(200).end()
     if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' })
 
-    const apiKey = process.env.HOUDINI_API_KEY
-    const apiSecret = process.env.HOUDINI_API_SECRET
+    const apiKey = (process.env.HOUDINI_API_KEY || '').trim()
+    const apiSecret = (process.env.HOUDINI_API_SECRET || '').trim()
     if (!apiKey || !apiSecret) {
         return res.status(500).json({ error: 'HoudiniSwap credentials not configured' })
     }
