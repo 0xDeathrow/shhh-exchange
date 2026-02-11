@@ -233,10 +233,11 @@ export async function refreshWalletData(wallets) {
 export async function sendSol(secretKeyBytes, toAddress, amountSOL) {
     const keypair = Keypair.fromSecretKey(new Uint8Array(secretKeyBytes))
 
-    // Use the same RPC logic as the rest of the app
-    const rpcUrl = import.meta.env.DEV && DEV_RPC ? DEV_RPC : RPC_PROXY
+    // Connection requires a full URL — build it from the proxy path in production
+    const rpcUrl = import.meta.env.DEV && DEV_RPC
+        ? DEV_RPC
+        : `${window.location.origin}${RPC_PROXY}`
 
-    // For signing we need a proper Connection object
     const connection = new Connection(rpcUrl, 'confirmed')
 
     const transaction = new Transaction().add(
