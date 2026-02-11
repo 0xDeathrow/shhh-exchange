@@ -192,7 +192,7 @@ export default function DashboardPage() {
     useEffect(() => {
         const fetchPrice = async () => {
             try {
-                const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd')
+                const res = await fetch('/api/price')
                 const data = await res.json()
                 if (data?.solana?.usd) setSolPrice(data.solana.usd)
             } catch (err) {
