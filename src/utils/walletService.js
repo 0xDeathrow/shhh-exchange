@@ -1,4 +1,4 @@
-import { Keypair, Connection, PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from '@solana/web3.js'
+import { Keypair, PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from '@solana/web3.js'
 import bs58 from 'bs58'
 import { encrypt, decrypt, hashPassphrase } from './crypto.js'
 
@@ -224,6 +224,7 @@ export async function refreshWalletData(wallets) {
 
 /**
  * Send SOL from one wallet to an address, signed entirely in the browser.
+ * Uses rpcCall (fetch-based) instead of Connection to avoid URL validation issues with the proxy.
  * The secret key never leaves the user's device.
  * @param {number[]} secretKeyBytes — the wallet's secretKey array
  * @param {string} toAddress — recipient Solana address (base58)
@@ -233,13 +234,6 @@ export async function refreshWalletData(wallets) {
 export async function sendSol(secretKeyBytes, toAddress, amountSOL) {
     const keypair = Keypair.fromSecretKey(new Uint8Array(secretKeyBytes))
 
-    // Connection requires a full URL — build it from the proxy path in production
-    const rpcUrl = import.meta.env.DEV && DEV_RPC
-        ? DEV_RPC
-        : `${window.location.origin}${RPC_PROXY}`
-
-    const connection = new Connection(rpcUrl, 'confirmed')
-
     const transaction = new Transaction().add(
         SystemProgram.transfer({
             fromPubkey: keypair.publicKey,
@@ -248,29 +242,58 @@ export async function sendSol(secretKeyBytes, toAddress, amountSOL) {
         })
     )
 
-    // Get recent blockhash
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed')
+    // Get recent blockhash via rpcCall (works through proxy)
+    const bhResult = await rpcCall('getLatestBlockhash', [{ commitment: 'confirmed' }])
+    const blockhash = bhResult.value.blockhash
+    const lastValidBlockHeight = bhResult.value.lastValidBlockHeight
+
     transaction.recentBlockhash = blockhash
     transaction.lastValidBlockHeight = lastValidBlockHeight
     transaction.feePayer = keypair.publicKey
 
-    // Sign the transaction
+    // Sign the transaction locally
     transaction.sign(keypair)
 
-    // Send the signed transaction
+    // Serialize and base64-encode for sendTransaction
     const rawTx = transaction.serialize()
-    const signature = await connection.sendRawTransaction(rawTx, {
-        skipPreflight: false,
-        preflightCommitment: 'confirmed',
-    })
+    const base64Tx = btoa(String.fromCharCode(...rawTx))
 
-    // Wait for confirmation
-    await connection.confirmTransaction({
-        signature,
-        blockhash,
-        lastValidBlockHeight,
-    }, 'confirmed')
+    // Send via rpcCall
+    const signature = await rpcCall('sendTransaction', [
+        base64Tx,
+        {
+            encoding: 'base64',
+            skipPreflight: false,
+            preflightCommitment: 'confirmed',
+        },
+    ])
 
+    // Poll for confirmation
+    const startTime = Date.now()
+    const timeout = 60_000 // 60s timeout
+
+    while (Date.now() - startTime < timeout) {
+        await new Promise(r => setTimeout(r, 2000)) // poll every 2s
+        try {
+            const statusResult = await rpcCall('getSignatureStatuses', [[signature]])
+            const status = statusResult?.value?.[0]
+            if (status) {
+                if (status.err) {
+                    throw new Error(`Transaction failed: ${JSON.stringify(status.err)}`)
+                }
+                if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+                    return { signature }
+                }
+            }
+        } catch (err) {
+            // Ignore polling errors, keep trying
+            console.warn('Confirmation poll error:', err.message)
+        }
+    }
+
+    // If we get here, transaction was sent but not confirmed in time
+    // Return the signature anyway — user can check later
+    console.warn('Transaction sent but confirmation timed out:', signature)
     return { signature }
 }
 
