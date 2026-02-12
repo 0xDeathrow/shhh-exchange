@@ -2142,7 +2142,7 @@ export default function DashboardPage() {
                                         // Build dynamic steps based on source/dest count
                                         const mtp = multiTransferProgress
                                         const shieldSteps = sourceWallets.map((w, i) => ({
-                                            label: sourceWallets.length > 1 ? `Shield ${tokenSymbol} from ${w.name} (${i + 1}/${sourceWallets.length})` : `Shielding ${tokenSymbol}`,
+                                            label: sourceWallets.length > 1 ? `Shield ${activeNav === 'Wallet Management' ? 'SOL' : tokenSymbol} from ${w.name} (${i + 1}/${sourceWallets.length})` : `Shielding ${activeNav === 'Wallet Management' ? 'SOL' : tokenSymbol}`,
                                             key: `shield-${i}`,
                                             phase: 'shield',
                                             index: i,
