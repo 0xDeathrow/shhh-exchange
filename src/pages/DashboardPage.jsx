@@ -62,7 +62,7 @@ const TOKEN_IMAGES = {
     usdc: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/logo.png',
     usdt: 'https://assets.coingecko.com/coins/images/325/standard/Tether.png',
     zec: 'https://assets.coingecko.com/coins/images/486/standard/circle-zcash-color.png',
-    ore: 'https://ore.supply/icon.png',
+    ore: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='20' fill='%23E8730C'/%3E%3Ctext x='20' y='25' text-anchor='middle' font-family='Arial' font-weight='bold' font-size='16' fill='white'%3EO%3C/text%3E%3C/svg%3E",
     store: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='20' fill='%234A90D9'/%3E%3Ctext x='20' y='25' text-anchor='middle' font-family='Arial' font-weight='bold' font-size='16' fill='white'%3ES%3C/text%3E%3C/svg%3E",
 }
 
