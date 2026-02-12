@@ -62,8 +62,18 @@ const TOKEN_IMAGES = {
     usdc: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/logo.png',
     usdt: 'https://assets.coingecko.com/coins/images/325/standard/Tether.png',
     zec: 'https://assets.coingecko.com/coins/images/486/standard/circle-zcash-color.png',
-    ore: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='20' fill='%23E8730C'/%3E%3Ctext x='20' y='25' text-anchor='middle' font-family='Arial' font-weight='bold' font-size='16' fill='white'%3EO%3C/text%3E%3C/svg%3E",
-    store: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='20' fill='%234A90D9'/%3E%3Ctext x='20' y='25' text-anchor='middle' font-family='Arial' font-weight='bold' font-size='16' fill='white'%3ES%3C/text%3E%3C/svg%3E",
+    ore: 'https://assets.coingecko.com/coins/images/36015/standard/Ore_logo.png',
+    store: 'https://assets.coingecko.com/coins/images/40296/standard/store-200.png',
+}
+
+/* ── CoinGecko ID mapping for price lookups ── */
+const COINGECKO_TOKEN_MAP = {
+    sol: 'solana',
+    usdc: 'usd-coin',
+    usdt: 'tether',
+    zec: 'zcash',
+    ore: 'ore',
+    store: 'store-protocol',
 }
 
 /* ────────────────────────────────────────
@@ -204,19 +214,33 @@ export default function DashboardPage() {
 
     // ── SOL price state ──
     const [solPrice, setSolPrice] = useState(null)
+    // ── All token prices (for swap conversion) ──
+    const [tokenPrices, setTokenPrices] = useState(null)  // { solana: { usd: N }, ... }
 
     useEffect(() => {
-        const fetchPrice = async () => {
+        const fetchPrices = async () => {
             try {
-                const res = await fetch('/api/price')
+                // Fetch all token prices in one call
+                const res = await fetch('/api/prices')
                 const data = await res.json()
-                if (data?.solana?.usd) setSolPrice(data.solana.usd)
+                if (data?.solana?.usd) {
+                    setSolPrice(data.solana.usd)
+                    setTokenPrices(data)
+                }
             } catch (err) {
-                console.warn('SOL price fetch failed:', err.message)
+                console.warn('Price fetch failed:', err.message)
+                // Fallback: try individual SOL price endpoint
+                try {
+                    const res = await fetch('/api/price')
+                    const data = await res.json()
+                    if (data?.solana?.usd) setSolPrice(data.solana.usd)
+                } catch (e) {
+                    console.warn('SOL price fallback also failed:', e.message)
+                }
             }
         }
-        fetchPrice()
-        const interval = setInterval(fetchPrice, 60000) // refresh every 60s
+        fetchPrices()
+        const interval = setInterval(fetchPrices, 60000) // refresh every 60s
         return () => clearInterval(interval)
     }, [])
 
@@ -836,8 +860,14 @@ export default function DashboardPage() {
         const destinations = getDestinationAddresses()
         if (destinations.length === 0) { setQuoteError('Set a destination address or drag a wallet'); return }
 
+        // Quick Private Transfer (Wallet Management) is always SOL-only
+        const isQuickTransfer = activeNav === 'Wallet Management'
+        const effectiveToken = isQuickTransfer ? 'sol' : selectedToken
+        const effectiveSymbol = isQuickTransfer ? 'SOL' : tokenSymbol
+        const effectiveIsSPL = isQuickTransfer ? false : isSPL
+
         // Check that the source wallets have enough balance
-        if (isSPL) {
+        if (effectiveIsSPL) {
             // For SPL tokens, we check SOL balance for gas only
             const sourceSOL = sourceWallets.reduce((s, w) => s + (w.balance || 0), 0)
             if (sourceSOL < 0.005 * sourceWallets.length) {
@@ -861,11 +891,24 @@ export default function DashboardPage() {
             // Estimate fees: each unshield has its own relayer fee
             const feePerUnshield = amt / destinations.length * 0.02 + 0.0035
             const totalFee = feePerUnshield * destinations.length
-            const amountOut = amt - totalFee
-            if (amountOut <= 0) {
+            const solAfterFees = amt - totalFee
+            if (solAfterFees <= 0) {
                 setQuoteError('Amount too small to cover relayer fees')
                 return
             }
+
+            // Calculate output amount with real price conversion
+            let amountOut = solAfterFees
+            if (effectiveToken !== 'sol' && tokenPrices) {
+                const solCGId = COINGECKO_TOKEN_MAP.sol
+                const targetCGId = COINGECKO_TOKEN_MAP[effectiveToken]
+                const solUSD = tokenPrices[solCGId]?.usd
+                const targetUSD = tokenPrices[targetCGId]?.usd
+                if (solUSD && targetUSD && targetUSD > 0) {
+                    amountOut = (solAfterFees * solUSD) / targetUSD
+                }
+            }
+
             const perRecipient = parseFloat((amountOut / destinations.length).toFixed(6))
             setQuoteData({
                 amountIn: amt,
@@ -874,8 +917,8 @@ export default function DashboardPage() {
                 recipients: destinations.length,
                 sources: sourceWallets.length,
                 perRecipientAmount: perRecipient,
-                token: selectedToken,
-                tokenSymbol,
+                token: effectiveToken,
+                tokenSymbol: effectiveSymbol,
             })
             setSwapStep('confirming')
         } catch (err) {
@@ -890,6 +933,11 @@ export default function DashboardPage() {
         const destinations = getDestinationAddresses()
         if (!amt || destinations.length === 0 || !quoteData) return
 
+        // Quick Private Transfer (Wallet Management) is always SOL-only
+        const isQuickTransfer = activeNav === 'Wallet Management'
+        const effectiveIsSPL = isQuickTransfer ? false : isSPL
+        const effectiveSymbol = isQuickTransfer ? 'SOL' : tokenSymbol
+
         setSwapStep('shielding')
         setSwapError('')
 
@@ -902,7 +950,7 @@ export default function DashboardPage() {
         const perSourceAmount = parseFloat((amt / sourceCount).toFixed(6))
 
         setMultiTransferProgress({ shieldIndex: 0, unshieldIndex: -1, shieldTotal: sourceCount, unshieldTotal: destinations.length, completedUnshields: [] })
-        setActiveSwap({ statusLabel: `Shielding ${tokenSymbol} from wallet 1/${sourceCount}...`, amountSOL: amt, tokenSymbol })
+        setActiveSwap({ statusLabel: `Shielding ${effectiveSymbol} from wallet 1/${sourceCount}...`, amountSOL: amt, tokenSymbol: effectiveSymbol })
 
         try {
             // ── SHIELD PHASE: deposit from each source wallet ──
@@ -923,9 +971,9 @@ export default function DashboardPage() {
                 }
 
                 setMultiTransferProgress(prev => ({ ...prev, shieldIndex: i }))
-                setActiveSwap(prev => ({ ...prev, statusLabel: `Shielding ${tokenSymbol} from ${srcWallet.name} (${i + 1}/${sourceCount})...` }))
+                setActiveSwap(prev => ({ ...prev, statusLabel: `Shielding ${effectiveSymbol} from ${srcWallet.name} (${i + 1}/${sourceCount})...` }))
 
-                if (isSPL) {
+                if (effectiveIsSPL) {
                     await shieldSPL(client, tokenInfo.pubkey.toString(), shieldAmt, setPrivacyStatus)
                 } else {
                     await shieldSol(client, shieldAmt, setPrivacyStatus)
@@ -946,11 +994,11 @@ export default function DashboardPage() {
             for (let j = 0; j < destinations.length; j++) {
                 const dest = destinations[j]
                 setMultiTransferProgress(prev => ({ ...prev, unshieldIndex: j }))
-                setActiveSwap(prev => ({ ...prev, statusLabel: `Unshielding ${tokenSymbol} to ${dest.name} (${j + 1}/${destinations.length})...` }))
+                setActiveSwap(prev => ({ ...prev, statusLabel: `Unshielding ${effectiveSymbol} to ${dest.name} (${j + 1}/${destinations.length})...` }))
 
                 try {
                     let unshieldResult
-                    if (isSPL) {
+                    if (effectiveIsSPL) {
                         unshieldResult = await unshieldSPL(primaryClient, tokenInfo.pubkey.toString(), perRecipientAmt, dest.address, setPrivacyStatus)
                     } else {
                         unshieldResult = await unshieldSol(primaryClient, perRecipientAmt, dest.address, setPrivacyStatus)
