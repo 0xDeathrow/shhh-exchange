@@ -2353,15 +2353,15 @@ export default function DashboardPage() {
                         {/* Header bar */}
                         <div style={{
                             padding: '14px 28px',
-                            borderBottom: `1px solid ${t.border}`,
+                            borderBottom: `1px solid ${t.accentBorder}`,
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            background: '#DC2626',
+                            background: t.accentBg,
                         }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                <ArrowDownUp size={14} style={{ color: '#fff' }} />
-                                <span style={{ fontSize: '10px', fontWeight: 600, color: '#fff', letterSpacing: '0.1em', fontFamily: "'JetBrains Mono', monospace", textTransform: 'uppercase' }}>
+                                <ArrowDownUp size={14} style={{ color: t.accent }} />
+                                <span style={{ fontSize: '10px', fontWeight: 600, color: t.accent, letterSpacing: '0.1em', fontFamily: "'JetBrains Mono', monospace", textTransform: 'uppercase' }}>
                                     Private Swap · ZK Shielded
                                 </span>
                             </div>
