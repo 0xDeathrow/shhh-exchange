@@ -2356,12 +2356,12 @@ export default function DashboardPage() {
                             borderBottom: `1px solid ${t.border}`,
                             display: 'flex',
                             alignItems: 'center',
-                            justifyContent: 'space-between',
-                            background: t.statsBg,
+                            justifyContent: 'center',
+                            background: '#DC2626',
                         }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                <ArrowDownUp size={14} style={{ color: t.accent }} />
-                                <span style={{ fontSize: '10px', fontWeight: 600, color: t.textDim, letterSpacing: '0.1em', fontFamily: "'JetBrains Mono', monospace", textTransform: 'uppercase' }}>
+                                <ArrowDownUp size={14} style={{ color: '#fff' }} />
+                                <span style={{ fontSize: '10px', fontWeight: 600, color: '#fff', letterSpacing: '0.1em', fontFamily: "'JetBrains Mono', monospace", textTransform: 'uppercase' }}>
                                     Private Swap · ZK Shielded
                                 </span>
                             </div>
