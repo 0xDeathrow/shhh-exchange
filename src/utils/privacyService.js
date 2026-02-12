@@ -12,6 +12,11 @@ import {
     withdraw,
     getUtxos,
     getBalanceFromUtxos,
+    depositSPL,
+    withdrawSPL,
+    getUtxosSPL,
+    getBalanceFromUtxosSPL,
+    tokens as privacyTokens,
     EncryptionService,
 } from 'privacycash/utils'
 import { WasmFactory } from '@lightprotocol/hasher.rs'
@@ -172,4 +177,111 @@ export async function getPrivateBalance(client) {
  */
 export function lamportsToSol(lamports) {
     return lamports / LAMPORTS_PER_SOL
+}
+
+/* ── Re-export supported token list for UI ── */
+export const SUPPORTED_TOKENS = privacyTokens
+
+/* ── Shield (Deposit) SPL token into the privacy pool ── */
+
+/**
+ * Shield an SPL token into the Privacy Cash pool.
+ * @param {object} client — from initPrivacyCash()
+ * @param {string} mintAddress — SPL token mint address
+ * @param {number} amount — amount in token units (e.g. 10 USDC = 10)
+ * @param {function} onStatus — callback for status updates
+ * @returns {{ tx: string }}
+ */
+export async function shieldSPL(client, mintAddress, amount, onStatus) {
+    onStatus?.(PRIVACY_STATUS.SHIELDING)
+
+    try {
+        onStatus?.(PRIVACY_STATUS.GENERATING_PROOF)
+
+        const lightWasm = await WasmFactory.getInstance()
+
+        onStatus?.(PRIVACY_STATUS.SUBMITTING)
+
+        const result = await depositSPL({
+            lightWasm,
+            mintAddress,
+            amount,
+            connection: client.connection,
+            encryptionService: client.encryptionService,
+            publicKey: client.publicKey,
+            transactionSigner: async (tx) => {
+                tx.sign([client.keypair])
+                return tx
+            },
+            keyBasePath: CIRCUIT_BASE_PATH,
+            storage: browserStorage,
+        })
+
+        onStatus?.(PRIVACY_STATUS.COMPLETE)
+        return result // { tx: string }
+    } catch (err) {
+        onStatus?.(PRIVACY_STATUS.ERROR)
+        throw err
+    }
+}
+
+/* ── Unshield (Withdraw) SPL token from the privacy pool ── */
+
+/**
+ * Unshield an SPL token from the Privacy Cash pool to any address.
+ * @param {object} client — from initPrivacyCash()
+ * @param {string} mintAddress — SPL token mint address
+ * @param {number} amount — amount in token units
+ * @param {string} recipientAddress — destination Solana address
+ * @param {function} onStatus — callback for status updates
+ * @returns {{ tx, recipient, base_units, fee_base_units, isPartial }}
+ */
+export async function unshieldSPL(client, mintAddress, amount, recipientAddress, onStatus) {
+    onStatus?.(PRIVACY_STATUS.UNSHIELDING)
+
+    try {
+        onStatus?.(PRIVACY_STATUS.GENERATING_PROOF)
+
+        const lightWasm = await WasmFactory.getInstance()
+
+        onStatus?.(PRIVACY_STATUS.SUBMITTING)
+
+        const result = await withdrawSPL({
+            lightWasm,
+            mintAddress,
+            amount,
+            connection: client.connection,
+            encryptionService: client.encryptionService,
+            publicKey: client.publicKey,
+            recipient: recipientAddress,
+            keyBasePath: CIRCUIT_BASE_PATH,
+            storage: browserStorage,
+        })
+
+        onStatus?.(PRIVACY_STATUS.COMPLETE)
+        return result
+    } catch (err) {
+        onStatus?.(PRIVACY_STATUS.ERROR)
+        throw err
+    }
+}
+
+/* ── Get Private (Shielded) SPL Token Balance ── */
+
+/**
+ * Get the shielded balance for a specific SPL token.
+ * @param {object} client — from initPrivacyCash()
+ * @param {string} mintAddress — SPL token mint address
+ * @returns {number} — balance in base units
+ */
+export async function getPrivateBalanceSPL(client, mintAddress) {
+    const utxos = await getUtxosSPL({
+        publicKey: client.publicKey,
+        connection: client.connection,
+        encryptionService: client.encryptionService,
+        storage: browserStorage,
+        mintAddress,
+    })
+
+    return getBalanceFromUtxosSPL(utxos)
 }

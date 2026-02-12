@@ -12,7 +12,7 @@ import {
     importBackup,
     sendSol,
 } from '../utils/walletService.js'
-import { initPrivacyCash, shieldSol, unshieldSol, getPrivateBalance, lamportsToSol, PRIVACY_STATUS } from '../utils/privacyService.js'
+import { initPrivacyCash, shieldSol, unshieldSol, shieldSPL, unshieldSPL, getPrivateBalance, lamportsToSol, PRIVACY_STATUS, SUPPORTED_TOKENS } from '../utils/privacyService.js'
 import { saveSwap, updateSwap, getSwapHistory, exportSwapHistory } from '../utils/swapHistory.js'
 import {
     Wallet,
@@ -55,6 +55,16 @@ const NAV_ITEMS = [
     { icon: ArrowLeftRight, label: 'Bridge' },
     { icon: DollarSign, label: 'Earn' },
 ]
+
+/* ── Token image URLs ── */
+const TOKEN_IMAGES = {
+    sol: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png',
+    usdc: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/logo.png',
+    usdt: 'https://assets.coingecko.com/coins/images/325/standard/Tether.png',
+    zec: 'https://assets.coingecko.com/coins/images/486/standard/circle-zcash-color.png',
+    ore: 'https://ore.supply/icon.png',
+    store: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='20' fill='%234A90D9'/%3E%3Ctext x='20' y='25' text-anchor='middle' font-family='Arial' font-weight='bold' font-size='16' fill='white'%3ES%3C/text%3E%3C/svg%3E",
+}
 
 /* ────────────────────────────────────────
    Theme tokens — grey brand palette
@@ -186,6 +196,11 @@ export default function DashboardPage() {
     const [swapError, setSwapError] = useState('')
     const [privacyStatus, setPrivacyStatus] = useState(PRIVACY_STATUS.IDLE)  // detailed sub-step
     const swapPollRef = useRef(null)
+    const [multiTransferProgress, setMultiTransferProgress] = useState({ shieldIndex: -1, unshieldIndex: -1, shieldTotal: 0, unshieldTotal: 0, completedUnshields: [] })
+    const [selectedToken, setSelectedToken] = useState('sol')  // sol | usdc | usdt | zec | ore | store
+    const tokenInfo = SUPPORTED_TOKENS.find(t => t.name === selectedToken) || SUPPORTED_TOKENS[0]
+    const tokenSymbol = selectedToken.toUpperCase()
+    const isSPL = selectedToken !== 'sol'
 
     // ── SOL price state ──
     const [solPrice, setSolPrice] = useState(null)
@@ -807,32 +822,61 @@ export default function DashboardPage() {
     /* ────────────────────────────────────────
        Swap flow handlers
        ──────────────────────────────────────── */
-    const getDestinationAddress = () => {
-        if (manualDestAddr.trim()) return manualDestAddr.trim()
-        if (destWallets.length > 0) return destWallets[0].address
-        return null
+    const getDestinationAddresses = () => {
+        const addrs = []
+        if (manualDestAddr.trim()) addrs.push({ address: manualDestAddr.trim(), name: 'Manual Address' })
+        destWallets.forEach(w => addrs.push({ address: w.address, name: w.name }))
+        return addrs
     }
 
     const handleGetQuote = async () => {
         const amt = parseFloat(swapAmount)
         if (!amt || amt <= 0) { setQuoteError('Enter a valid amount'); return }
 
-        const destAddr = getDestinationAddress()
-        if (!destAddr) { setQuoteError('Set a destination address or drag a wallet'); return }
+        const destinations = getDestinationAddresses()
+        if (destinations.length === 0) { setQuoteError('Set a destination address or drag a wallet'); return }
+
+        // Check that the source wallets have enough balance
+        if (isSPL) {
+            // For SPL tokens, we check SOL balance for gas only
+            const sourceSOL = sourceWallets.reduce((s, w) => s + (w.balance || 0), 0)
+            if (sourceSOL < 0.005 * sourceWallets.length) {
+                setQuoteError(`Need at least ${(0.005 * sourceWallets.length).toFixed(3)} SOL for gas fees`)
+                return
+            }
+        } else {
+            const sourceBalance = sourceWallets.reduce((s, w) => s + (w.balance || 0), 0)
+            const feeReserve = 0.01 * sourceWallets.length
+            if (amt > sourceBalance - feeReserve) {
+                setQuoteError(`Insufficient balance. You have ${sourceBalance.toFixed(6)} SOL — need ~${feeReserve.toFixed(3)} SOL for tx fees. Max: ${Math.max(0, sourceBalance - feeReserve).toFixed(6)} SOL`)
+                return
+            }
+        }
 
         setQuoteLoading(true)
         setQuoteError('')
         setQuoteData(null)
 
         try {
-            // Privacy Cash has no quote API — we estimate the ~2% relayer fee
-            const estimatedFee = amt * 0.02 + 0.0035  // ~2% + rent fee
-            const amountOut = amt - estimatedFee
+            // Estimate fees: each unshield has its own relayer fee
+            const feePerUnshield = amt / destinations.length * 0.02 + 0.0035
+            const totalFee = feePerUnshield * destinations.length
+            const amountOut = amt - totalFee
             if (amountOut <= 0) {
                 setQuoteError('Amount too small to cover relayer fees')
                 return
             }
-            setQuoteData({ amountIn: amt, amountOut: parseFloat(amountOut.toFixed(6)), estimatedFee: parseFloat(estimatedFee.toFixed(6)) })
+            const perRecipient = parseFloat((amountOut / destinations.length).toFixed(6))
+            setQuoteData({
+                amountIn: amt,
+                amountOut: parseFloat(amountOut.toFixed(6)),
+                estimatedFee: parseFloat(totalFee.toFixed(6)),
+                recipients: destinations.length,
+                sources: sourceWallets.length,
+                perRecipientAmount: perRecipient,
+                token: selectedToken,
+                tokenSymbol,
+            })
             setSwapStep('confirming')
         } catch (err) {
             setQuoteError(err.message || 'Failed to estimate fees')
@@ -843,56 +887,114 @@ export default function DashboardPage() {
 
     const handleExecuteSwap = async () => {
         const amt = parseFloat(swapAmount)
-        const destAddr = getDestinationAddress()
-        if (!amt || !destAddr || !quoteData) return
+        const destinations = getDestinationAddresses()
+        if (!amt || destinations.length === 0 || !quoteData) return
 
         setSwapStep('shielding')
         setSwapError('')
 
+        const rpcUrl = import.meta.env.DEV
+            ? (import.meta.env.VITE_SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com')
+            : `${window.location.origin}/api/rpc`
+
+        // Determine how much each source wallet should shield
+        const sourceCount = sourceWallets.length
+        const perSourceAmount = parseFloat((amt / sourceCount).toFixed(6))
+
+        setMultiTransferProgress({ shieldIndex: 0, unshieldIndex: -1, shieldTotal: sourceCount, unshieldTotal: destinations.length, completedUnshields: [] })
+        setActiveSwap({ statusLabel: `Shielding ${tokenSymbol} from wallet 1/${sourceCount}...`, amountSOL: amt, tokenSymbol })
+
         try {
-            // 1. Get source wallet secret key
-            const sourceWallet = fullWalletsRef.current.find(w => w.id === sourceWallets[0]?.id)
-            if (!sourceWallet?.secretKey) throw new Error('Source wallet key not found')
+            // ── SHIELD PHASE: deposit from each source wallet ──
+            for (let i = 0; i < sourceCount; i++) {
+                const srcWallet = fullWalletsRef.current.find(w => w.id === sourceWallets[i]?.id)
+                if (!srcWallet?.secretKey) throw new Error(`Source wallet "${sourceWallets[i]?.name}" key not found`)
 
-            // 2. Initialize Privacy Cash client
-            const rpcUrl = import.meta.env.VITE_SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com'
-            const client = initPrivacyCash(rpcUrl, sourceWallet.secretKey)
+                const client = initPrivacyCash(rpcUrl, srcWallet.secretKey)
+                let shieldAmt = i === sourceCount - 1
+                    ? parseFloat((amt - perSourceAmount * (sourceCount - 1)).toFixed(6))  // last wallet gets remainder to avoid rounding errors
+                    : perSourceAmount
 
-            // 3. Shield (deposit) SOL into privacy pool
-            setActiveSwap({ statusLabel: 'Shielding SOL...', amountSOL: amt })
-            const shieldResult = await shieldSol(client, amt, setPrivacyStatus)
+                // Cap to wallet balance minus gas reserve for the shield TX itself
+                const walletBalance = srcWallet.balance || sourceWallets[i]?.balance || 0
+                const maxShieldable = Math.max(0, walletBalance - 0.005)
+                if (shieldAmt > maxShieldable) {
+                    shieldAmt = parseFloat(maxShieldable.toFixed(6))
+                }
 
-            setActiveSwap(prev => ({ ...prev, shieldTx: shieldResult.tx, statusLabel: 'Unshielding to destination...' }))
+                setMultiTransferProgress(prev => ({ ...prev, shieldIndex: i }))
+                setActiveSwap(prev => ({ ...prev, statusLabel: `Shielding ${tokenSymbol} from ${srcWallet.name} (${i + 1}/${sourceCount})...` }))
 
-            // 4. Unshield (withdraw) SOL to destination address
+                if (isSPL) {
+                    await shieldSPL(client, tokenInfo.pubkey.toString(), shieldAmt, setPrivacyStatus)
+                } else {
+                    await shieldSol(client, shieldAmt, setPrivacyStatus)
+                }
+            }
+
+            // ── UNSHIELD PHASE: withdraw to each destination ──
             setSwapStep('unshielding')
-            const unshieldResult = await unshieldSol(client, amt, destAddr, setPrivacyStatus)
+            const perRecipientAmt = quoteData.perRecipientAmount || parseFloat((amt / destinations.length).toFixed(6))
 
-            const feeSOL = lamportsToSol(unshieldResult.fee_in_lamports || 0)
-            const receivedSOL = lamportsToSol(unshieldResult.amount_in_lamports || 0)
+            // Use the first source wallet's client for unshielding (funds are in the shared pool)
+            const primarySrc = fullWalletsRef.current.find(w => w.id === sourceWallets[0]?.id)
+            const primaryClient = initPrivacyCash(rpcUrl, primarySrc.secretKey)
 
-            // 5. Save to swap history
-            await saveSwap(passphrase, {
-                txId: unshieldResult.tx,
-                type: 'private_transfer',
-                sourceWallet: { name: sourceWallet.name, address: sourceWallet.address },
-                destAddress: destAddr,
-                amountSOL: amt,
-                feeSOL,
-                statusLabel: 'Complete',
-            })
+            let totalFees = 0
+            let lastTx = null
+
+            for (let j = 0; j < destinations.length; j++) {
+                const dest = destinations[j]
+                setMultiTransferProgress(prev => ({ ...prev, unshieldIndex: j }))
+                setActiveSwap(prev => ({ ...prev, statusLabel: `Unshielding ${tokenSymbol} to ${dest.name} (${j + 1}/${destinations.length})...` }))
+
+                try {
+                    let unshieldResult
+                    if (isSPL) {
+                        unshieldResult = await unshieldSPL(primaryClient, tokenInfo.pubkey.toString(), perRecipientAmt, dest.address, setPrivacyStatus)
+                    } else {
+                        unshieldResult = await unshieldSol(primaryClient, perRecipientAmt, dest.address, setPrivacyStatus)
+                    }
+                    const feeSOL = lamportsToSol(unshieldResult.fee_in_lamports || 0)
+                    totalFees += feeSOL
+                    lastTx = unshieldResult.tx
+
+                    setMultiTransferProgress(prev => ({
+                        ...prev,
+                        completedUnshields: [...prev.completedUnshields, { address: dest.address, name: dest.name, tx: unshieldResult.tx, amount: perRecipientAmt, fee: feeSOL }],
+                    }))
+
+                    // Save to swap history per unshield
+                    await saveSwap(passphrase, {
+                        txId: unshieldResult.tx,
+                        type: 'private_transfer',
+                        sourceWallet: { name: primarySrc.name, address: primarySrc.address },
+                        destAddress: dest.address,
+                        destName: dest.name,
+                        amountSOL: perRecipientAmt,
+                        feeSOL,
+                        statusLabel: 'Complete',
+                    })
+                } catch (err) {
+                    // Log error but continue to next destination
+                    console.error(`Failed to unshield to ${dest.name}:`, err)
+                    setMultiTransferProgress(prev => ({
+                        ...prev,
+                        completedUnshields: [...prev.completedUnshields, { address: dest.address, name: dest.name, error: err.message }],
+                    }))
+                }
+            }
 
             setActiveSwap(prev => ({
                 ...prev,
-                txId: unshieldResult.tx,
+                txId: lastTx,
                 statusLabel: 'Complete',
-                feeSOL,
-                receivedSOL,
-                isPartial: unshieldResult.isPartial,
+                feeSOL: totalFees,
+                receivedSOL: perRecipientAmt * destinations.length,
             }))
             setSwapStep('done')
 
-            // 6. Refresh wallet balances
+            // Refresh wallet balances
             fetchLiveBalances()
 
         } catch (err) {
@@ -912,6 +1014,7 @@ export default function DashboardPage() {
         setPrivacyStatus(PRIVACY_STATUS.IDLE)
         setSourceWallets([])
         setDestWallets([])
+        setMultiTransferProgress({ shieldIndex: -1, unshieldIndex: -1, shieldTotal: 0, unshieldTotal: 0, completedUnshields: [] })
         if (swapPollRef.current) {
             clearInterval(swapPollRef.current)
             swapPollRef.current = null
@@ -1425,361 +1528,864 @@ export default function DashboardPage() {
                     </div>
                 </header>
 
-                {/* ── STATS BAR ── */}
-                <div style={{
-                    display: 'flex',
-                    gap: '1px',
-                    background: t.border,
-                    borderBottom: `1px solid ${t.border}`,
-                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
-                }}>
-                    {[
-                        { label: 'Total Balance', value: totalBalance, accent: true, isSol: true },
-                        { label: 'Active Wallets', value: activeWalletCount },
-                        { label: 'Token Holdings', value: totalHoldings },
-                    ].map(({ label, value, accent, isSol }) => (
-                        <div key={label} style={{
-                            flex: 1,
-                            padding: '16px 24px',
-                            background: accent ? t.statsGradient : t.statsBg,
-                        }}>
-                            <div style={{
-                                fontSize: '10px',
-                                fontWeight: 600,
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.1em',
-                                color: t.textDim,
-                                marginBottom: '6px',
+                {activeNav === 'Wallet Management' && (<>
+                    {/* ── STATS BAR ── */}
+                    <div style={{
+                        display: 'flex',
+                        gap: '1px',
+                        background: t.border,
+                        borderBottom: `1px solid ${t.border}`,
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
+                    }}>
+                        {[
+                            { label: 'Total Balance', value: totalBalance, accent: true, isSol: true },
+                            { label: 'Active Wallets', value: activeWalletCount },
+                            { label: 'Token Holdings', value: totalHoldings },
+                        ].map(({ label, value, accent, isSol }) => (
+                            <div key={label} style={{
+                                flex: 1,
+                                padding: '16px 24px',
+                                background: accent ? t.statsGradient : t.statsBg,
                             }}>
-                                {label}
+                                <div style={{
+                                    fontSize: '10px',
+                                    fontWeight: 600,
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.1em',
+                                    color: t.textDim,
+                                    marginBottom: '6px',
+                                }}>
+                                    {label}
+                                </div>
+                                <div style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                }}>
+                                    <div style={{
+                                        fontSize: accent ? '20px' : '18px',
+                                        fontWeight: 700,
+                                        color: accent ? t.text : t.textSec,
+                                        letterSpacing: '-0.02em',
+                                        fontFamily: accent ? "'JetBrains Mono', monospace" : "'Inter', sans-serif",
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '6px',
+                                    }}>
+                                        {isSol && <SolLogo size={16} />}
+                                        {isSol ? value.toFixed(4) : value}
+                                    </div>
+                                    {isSol && solPrice && (
+                                        <span style={{
+                                            fontSize: '13px',
+                                            fontWeight: 500,
+                                            color: t.textDim,
+                                            opacity: 0.7,
+                                            fontFamily: "'JetBrains Mono', monospace",
+                                        }}>
+                                            ${(value * solPrice).toFixed(2)}
+                                        </span>
+                                    )}
+                                </div>
                             </div>
+                        ))}
+                        {/* Refresh button */}
+                        <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: '16px 20px',
+                            background: t.statsBg,
+                        }}>
+                            <button
+                                onClick={() => fetchLiveBalances()}
+                                disabled={balanceLoading}
+                                title="Refresh balances"
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    width: '36px',
+                                    height: '36px',
+                                    borderRadius: '10px',
+                                    border: `1px solid ${t.cardBorder}`,
+                                    background: 'transparent',
+                                    color: balanceLoading ? t.textDim : t.textMuted,
+                                    cursor: balanceLoading ? 'not-allowed' : 'pointer',
+                                    transition: 'all 0.2s ease',
+                                    animation: balanceLoading ? 'spin 1s linear infinite' : 'none',
+                                }}
+                            >
+                                <RefreshCw size={16} />
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* ── CONTENT ── */}
+                    <main style={{ flex: 1, display: 'flex', overflow: 'hidden', maxWidth: '100%' }}>
+                        {/* ── LEFT: WALLET LIST ── */}
+                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+                            {/* Toolbar */}
                             <div style={{
+                                padding: '12px 20px',
+                                borderBottom: `1px solid ${t.border}`,
                                 display: 'flex',
                                 alignItems: 'center',
                                 gap: '8px',
                             }}>
-                                <div style={{
-                                    fontSize: accent ? '20px' : '18px',
-                                    fontWeight: 700,
-                                    color: accent ? t.text : t.textSec,
-                                    letterSpacing: '-0.02em',
-                                    fontFamily: accent ? "'JetBrains Mono', monospace" : "'Inter', sans-serif",
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '6px',
-                                }}>
-                                    {isSol && <SolLogo size={16} />}
-                                    {isSol ? value.toFixed(4) : value}
-                                </div>
-                                {isSol && solPrice && (
-                                    <span style={{
-                                        fontSize: '13px',
-                                        fontWeight: 500,
+                                {/* Search */}
+                                <div style={{ position: 'relative', flex: 1, maxWidth: '240px' }}>
+                                    <Search size={14} style={{
+                                        position: 'absolute',
+                                        left: '12px',
+                                        top: '50%',
+                                        transform: 'translateY(-50%)',
                                         color: t.textDim,
-                                        opacity: 0.7,
-                                        fontFamily: "'JetBrains Mono', monospace",
-                                    }}>
-                                        ${(value * solPrice).toFixed(2)}
-                                    </span>
-                                )}
-                            </div>
-                        </div>
-                    ))}
-                    {/* Refresh button */}
-                    <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        padding: '16px 20px',
-                        background: t.statsBg,
-                    }}>
-                        <button
-                            onClick={() => fetchLiveBalances()}
-                            disabled={balanceLoading}
-                            title="Refresh balances"
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                width: '36px',
-                                height: '36px',
-                                borderRadius: '10px',
-                                border: `1px solid ${t.cardBorder}`,
-                                background: 'transparent',
-                                color: balanceLoading ? t.textDim : t.textMuted,
-                                cursor: balanceLoading ? 'not-allowed' : 'pointer',
-                                transition: 'all 0.2s ease',
-                                animation: balanceLoading ? 'spin 1s linear infinite' : 'none',
-                            }}
-                        >
-                            <RefreshCw size={16} />
-                        </button>
-                    </div>
-                </div>
+                                    }} />
+                                    <input
+                                        value={searchQuery}
+                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                        placeholder="Search wallets..."
+                                        style={{
+                                            ...inputBaseStyle,
+                                            paddingLeft: '34px',
+                                            width: '100%',
+                                            fontSize: '12px',
+                                        }}
+                                    />
+                                </div>
 
-                {/* ── CONTENT ── */}
-                <main style={{ flex: 1, display: 'flex', overflow: 'hidden', maxWidth: '100%' }}>
-                    {/* ── LEFT: WALLET LIST ── */}
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-                        {/* Toolbar */}
-                        <div style={{
-                            padding: '12px 20px',
-                            borderBottom: `1px solid ${t.border}`,
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '8px',
-                        }}>
-                            {/* Search */}
-                            <div style={{ position: 'relative', flex: 1, maxWidth: '240px' }}>
-                                <Search size={14} style={{
-                                    position: 'absolute',
-                                    left: '12px',
-                                    top: '50%',
-                                    transform: 'translateY(-50%)',
-                                    color: t.textDim,
-                                }} />
-                                <input
-                                    value={searchQuery}
-                                    onChange={(e) => setSearchQuery(e.target.value)}
-                                    placeholder="Search wallets..."
+                                <div style={{ flex: 1 }} />
+
+                                {/* Show Archived */}
+                                <button
+                                    onClick={() => setShowArchived(!showArchived)}
                                     style={{
-                                        ...inputBaseStyle,
-                                        paddingLeft: '34px',
-                                        width: '100%',
-                                        fontSize: '12px',
+                                        ...smallBtnStyle,
+                                        background: showArchived ? t.accentBg : 'transparent',
+                                        color: showArchived ? t.accent : t.textMuted,
+                                        borderColor: showArchived ? t.accentBorder : t.cardBorder,
                                     }}
-                                />
-                            </div>
-
-                            <div style={{ flex: 1 }} />
-
-                            {/* Show Archived */}
-                            <button
-                                onClick={() => setShowArchived(!showArchived)}
-                                style={{
-                                    ...smallBtnStyle,
-                                    background: showArchived ? t.accentBg : 'transparent',
-                                    color: showArchived ? t.accent : t.textMuted,
-                                    borderColor: showArchived ? t.accentBorder : t.cardBorder,
-                                }}
-                            >
-                                <Archive size={13} />
-                                Archived
-                            </button>
-
-                            {/* Import */}
-                            <button
-                                onClick={() => { setShowImport(!showImport); setShowCreate(false) }}
-                                style={{
-                                    ...smallBtnStyle,
-                                    background: showImport ? t.accentBg : 'transparent',
-                                    color: showImport ? t.accent : t.textSec,
-                                    borderColor: showImport ? t.accentBorder : t.cardBorder,
-                                }}
-                            >
-                                <Download size={13} />
-                                Import
-                            </button>
-
-                            {/* Create */}
-                            <button
-                                onClick={() => { setShowCreate(!showCreate); setShowImport(false) }}
-                                style={{
-                                    ...smallBtnStyle,
-                                    background: '#DC3545',
-                                    color: '#fff',
-                                    border: '1px solid #DC3545',
-                                    borderRadius: '8px',
-                                }}
-                            >
-                                <Plus size={13} />
-                                Create
-                            </button>
-                        </div>
-
-                        {/* ── Create / Import inline forms ── */}
-                        {showCreate && (
-                            <div style={{
-                                padding: '16px 20px',
-                                borderBottom: `1px solid ${t.border}`,
-                                display: 'flex',
-                                gap: '10px',
-                                alignItems: 'flex-end',
-                                background: t.statsBg,
-                            }}>
-                                <div style={{ flex: 1 }}>
-                                    <label style={{
-                                        fontSize: '10px',
-                                        fontWeight: 600,
-                                        textTransform: 'uppercase',
-                                        letterSpacing: '0.08em',
-                                        color: t.textDim,
-                                        display: 'block',
-                                        marginBottom: '6px',
-                                    }}>Wallet Name</label>
-                                    <input
-                                        value={newWalletName}
-                                        onChange={(e) => setNewWalletName(e.target.value)}
-                                        placeholder="e.g. Trading Wallet"
-                                        style={{ ...inputBaseStyle, width: '100%' }}
-                                        onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-                                    />
-                                </div>
-                                <button onClick={handleCreate} style={{
-                                    ...smallBtnStyle,
-                                    background: '#DC3545',
-                                    color: '#fff',
-                                    border: '1px solid #DC3545',
-                                    padding: '10px 20px',
-                                }}>
-                                    Create Wallet
+                                >
+                                    <Archive size={13} />
+                                    Archived
                                 </button>
-                            </div>
-                        )}
 
-                        {showImport && (
-                            <div style={{
-                                padding: '16px 20px',
-                                borderBottom: `1px solid ${t.border}`,
-                                display: 'flex',
-                                gap: '10px',
-                                alignItems: 'flex-end',
-                                background: t.statsBg,
-                            }}>
-                                <div style={{ width: '140px' }}>
-                                    <label style={{
-                                        fontSize: '10px',
-                                        fontWeight: 600,
-                                        textTransform: 'uppercase',
-                                        letterSpacing: '0.08em',
-                                        color: t.textDim,
-                                        display: 'block',
-                                        marginBottom: '6px',
-                                    }}>Name</label>
-                                    <input
-                                        value={importName}
-                                        onChange={(e) => setImportName(e.target.value)}
-                                        placeholder="Label"
-                                        style={{ ...inputBaseStyle, width: '100%' }}
-                                    />
-                                </div>
-                                <div style={{ flex: 1 }}>
-                                    <label style={{
-                                        fontSize: '10px',
-                                        fontWeight: 600,
-                                        textTransform: 'uppercase',
-                                        letterSpacing: '0.08em',
-                                        color: t.textDim,
-                                        display: 'block',
-                                        marginBottom: '6px',
-                                    }}>Private Key (base58)</label>
-                                    <input
-                                        type="password"
-                                        value={importPrivateKey}
-                                        onChange={(e) => { setImportPrivateKey(e.target.value); setImportError('') }}
-                                        placeholder="Paste base58 private key"
-                                        style={{ ...inputBaseStyle, width: '100%', fontFamily: "'JetBrains Mono', monospace", fontSize: '12px' }}
-                                        onKeyDown={(e) => e.key === 'Enter' && handleImport()}
-                                        autoComplete="off"
-                                    />
-                                    {importError && (
-                                        <p style={{ color: '#DC3545', fontSize: '11px', margin: '6px 0 0', fontWeight: 500 }}>
-                                            {importError}
-                                        </p>
-                                    )}
-                                </div>
-                                <button onClick={handleImport} style={{
-                                    ...smallBtnStyle,
-                                    background: '#DC3545',
-                                    color: '#fff',
-                                    border: '1px solid #DC3545',
-                                    padding: '10px 20px',
-                                }}>
+                                {/* Import */}
+                                <button
+                                    onClick={() => { setShowImport(!showImport); setShowCreate(false) }}
+                                    style={{
+                                        ...smallBtnStyle,
+                                        background: showImport ? t.accentBg : 'transparent',
+                                        color: showImport ? t.accent : t.textSec,
+                                        borderColor: showImport ? t.accentBorder : t.cardBorder,
+                                    }}
+                                >
+                                    <Download size={13} />
                                     Import
                                 </button>
+
+                                {/* Create */}
+                                <button
+                                    onClick={() => { setShowCreate(!showCreate); setShowImport(false) }}
+                                    style={{
+                                        ...smallBtnStyle,
+                                        background: '#DC3545',
+                                        color: '#fff',
+                                        border: '1px solid #DC3545',
+                                        borderRadius: '8px',
+                                    }}
+                                >
+                                    <Plus size={13} />
+                                    Create
+                                </button>
                             </div>
-                        )}
 
-                        {/* ── Wallet table ── */}
-                        <div style={{ flex: 1, overflow: 'auto', padding: '8px 12px' }}>
-                            <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0 4px' }}>
-                                <thead>
-                                    <tr>
-                                        <th style={tableHeaderStyle}>Wallet</th>
-                                        <th style={tableHeaderStyle}>Balance</th>
-                                        <th style={tableHeaderStyle}>Holdings</th>
-                                        <th style={{ ...tableHeaderStyle, width: '100px' }}>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {filteredWallets.length === 0 ? (
+                            {/* ── Create / Import inline forms ── */}
+                            {showCreate && (
+                                <div style={{
+                                    padding: '16px 20px',
+                                    borderBottom: `1px solid ${t.border}`,
+                                    display: 'flex',
+                                    gap: '10px',
+                                    alignItems: 'flex-end',
+                                    background: t.statsBg,
+                                }}>
+                                    <div style={{ flex: 1 }}>
+                                        <label style={{
+                                            fontSize: '10px',
+                                            fontWeight: 600,
+                                            textTransform: 'uppercase',
+                                            letterSpacing: '0.08em',
+                                            color: t.textDim,
+                                            display: 'block',
+                                            marginBottom: '6px',
+                                        }}>Wallet Name</label>
+                                        <input
+                                            value={newWalletName}
+                                            onChange={(e) => setNewWalletName(e.target.value)}
+                                            placeholder="e.g. Trading Wallet"
+                                            style={{ ...inputBaseStyle, width: '100%' }}
+                                            onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+                                        />
+                                    </div>
+                                    <button onClick={handleCreate} style={{
+                                        ...smallBtnStyle,
+                                        background: '#DC3545',
+                                        color: '#fff',
+                                        border: '1px solid #DC3545',
+                                        padding: '10px 20px',
+                                    }}>
+                                        Create Wallet
+                                    </button>
+                                </div>
+                            )}
+
+                            {showImport && (
+                                <div style={{
+                                    padding: '16px 20px',
+                                    borderBottom: `1px solid ${t.border}`,
+                                    display: 'flex',
+                                    gap: '10px',
+                                    alignItems: 'flex-end',
+                                    background: t.statsBg,
+                                }}>
+                                    <div style={{ width: '140px' }}>
+                                        <label style={{
+                                            fontSize: '10px',
+                                            fontWeight: 600,
+                                            textTransform: 'uppercase',
+                                            letterSpacing: '0.08em',
+                                            color: t.textDim,
+                                            display: 'block',
+                                            marginBottom: '6px',
+                                        }}>Name</label>
+                                        <input
+                                            value={importName}
+                                            onChange={(e) => setImportName(e.target.value)}
+                                            placeholder="Label"
+                                            style={{ ...inputBaseStyle, width: '100%' }}
+                                        />
+                                    </div>
+                                    <div style={{ flex: 1 }}>
+                                        <label style={{
+                                            fontSize: '10px',
+                                            fontWeight: 600,
+                                            textTransform: 'uppercase',
+                                            letterSpacing: '0.08em',
+                                            color: t.textDim,
+                                            display: 'block',
+                                            marginBottom: '6px',
+                                        }}>Private Key (base58)</label>
+                                        <input
+                                            type="password"
+                                            value={importPrivateKey}
+                                            onChange={(e) => { setImportPrivateKey(e.target.value); setImportError('') }}
+                                            placeholder="Paste base58 private key"
+                                            style={{ ...inputBaseStyle, width: '100%', fontFamily: "'JetBrains Mono', monospace", fontSize: '12px' }}
+                                            onKeyDown={(e) => e.key === 'Enter' && handleImport()}
+                                            autoComplete="off"
+                                        />
+                                        {importError && (
+                                            <p style={{ color: '#DC3545', fontSize: '11px', margin: '6px 0 0', fontWeight: 500 }}>
+                                                {importError}
+                                            </p>
+                                        )}
+                                    </div>
+                                    <button onClick={handleImport} style={{
+                                        ...smallBtnStyle,
+                                        background: '#DC3545',
+                                        color: '#fff',
+                                        border: '1px solid #DC3545',
+                                        padding: '10px 20px',
+                                    }}>
+                                        Import
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* ── Wallet table ── */}
+                            <div style={{ flex: 1, overflow: 'auto', padding: '8px 12px' }}>
+                                <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0 4px' }}>
+                                    <thead>
                                         <tr>
-                                            <td colSpan={4} style={{ padding: '60px 20px', textAlign: 'center' }}>
-                                                <Wallet size={28} strokeWidth={1} style={{ color: t.textDim, marginBottom: '10px' }} />
-                                                <p style={{ fontSize: '13px', color: t.textMuted, margin: 0 }}>
-                                                    {searchQuery ? 'No wallets match your search' : 'No wallets yet — create or import one'}
-                                                </p>
-                                            </td>
+                                            <th style={tableHeaderStyle}>Wallet</th>
+                                            <th style={tableHeaderStyle}>Balance</th>
+                                            <th style={tableHeaderStyle}>Holdings</th>
+                                            <th style={{ ...tableHeaderStyle, width: '100px' }}>Actions</th>
                                         </tr>
-                                    ) : (
-                                        filteredWallets.map((w, i) => <WalletRow key={w.id} wallet={w} index={i} />)
-                                    )}
-                                </tbody>
-                            </table>
+                                    </thead>
+                                    <tbody>
+                                        {filteredWallets.length === 0 ? (
+                                            <tr>
+                                                <td colSpan={4} style={{ padding: '60px 20px', textAlign: 'center' }}>
+                                                    <Wallet size={28} strokeWidth={1} style={{ color: t.textDim, marginBottom: '10px' }} />
+                                                    <p style={{ fontSize: '13px', color: t.textMuted, margin: 0 }}>
+                                                        {searchQuery ? 'No wallets match your search' : 'No wallets yet — create or import one'}
+                                                    </p>
+                                                </td>
+                                            </tr>
+                                        ) : (
+                                            filteredWallets.map((w, i) => <WalletRow key={w.id} wallet={w} index={i} />)
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
-                    </div>
 
-                    {/* ── RIGHT: TRANSFER PANEL ── */}
-                    <div style={{
-                        width: '400px',
-                        minWidth: '400px',
-                        flexShrink: 0,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        background: t.cardBg,
-                        borderLeft: `1px solid ${t.border}`,
-                        overflowX: 'hidden',
-                        overflowY: 'auto',
-                    }}>
-                        {/* Panel header */}
+                        {/* ── RIGHT: TRANSFER PANEL ── */}
                         <div style={{
-                            padding: '14px 20px',
+                            width: '400px',
+                            minWidth: '400px',
+                            flexShrink: 0,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            background: t.cardBg,
+                            borderLeft: `1px solid ${t.border}`,
+                            overflowX: 'hidden',
+                            overflowY: 'auto',
+                        }}>
+                            {/* Panel header */}
+                            <div style={{
+                                padding: '14px 20px',
+                                borderBottom: `1px solid ${t.border}`,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <ArrowDownUp size={16} style={{ color: t.accent }} />
+                                    <span style={{ fontSize: '13px', fontWeight: 700, color: t.text, letterSpacing: '-0.01em' }}>
+                                        Quick Private Transfer
+                                    </span>
+                                </div>
+                                {swapStep !== 'idle' && swapStep !== 'quoting' && (
+                                    <button onClick={resetSwap} style={{ ...iconBtnStyle, fontSize: '10px', color: t.textDim }}>
+                                        <X size={14} />
+                                    </button>
+                                )}
+                            </div>
+
+                            {/* ── SWAP CONTENT ── */}
+                            {(swapStep === 'idle' || swapStep === 'quoting' || swapStep === 'confirming') ? (
+                                <>
+                                    {/* Source wallets zone */}
+                                    <DropZone title="Source" wallets={sourceWallets} zone="source" />
+
+                                    {/* Amount input */}
+                                    <div style={{
+                                        padding: '12px 16px',
+                                        borderBottom: `1px solid ${t.border}`,
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: '6px',
+                                    }}>
+                                        <span style={{ fontSize: '11px', fontWeight: 600, color: t.textDim, letterSpacing: '0.03em' }}>
+                                            AMOUNT (SOL)
+                                        </span>
+                                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                            <input
+                                                type="number"
+                                                value={swapAmount}
+                                                onChange={(e) => { setSwapAmount(e.target.value); setQuoteData(null); setSwapStep('idle'); setQuoteError('') }}
+                                                placeholder="0.00"
+                                                step="0.001"
+                                                min="0"
+                                                style={{
+                                                    flex: 1,
+                                                    background: t.inputBg,
+                                                    border: `1px solid ${t.cardBorder}`,
+                                                    borderRadius: '8px',
+                                                    padding: '10px 12px',
+                                                    color: t.text,
+                                                    fontSize: '14px',
+                                                    fontFamily: "'JetBrains Mono', monospace",
+                                                    outline: 'none',
+                                                }}
+                                            />
+                                            {sourceWallets.length > 0 && (
+                                                <button
+                                                    onClick={() => {
+                                                        const total = sourceWallets.reduce((s, w) => s + (w.balance || 0), 0)
+                                                        const feeReserve = 0.01 * sourceWallets.length // reserve per source wallet for shield tx fees
+                                                        const maxAmt = Math.max(0, total - feeReserve)
+                                                        setSwapAmount(maxAmt.toFixed(6))
+                                                        setQuoteData(null); setSwapStep('idle')
+                                                    }}
+                                                    style={{
+                                                        ...smallBtnStyle,
+                                                        fontSize: '10px',
+                                                        padding: '6px 10px',
+                                                        background: t.inputBg,
+                                                        border: `1px solid ${t.cardBorder}`,
+                                                        color: t.accent,
+                                                        fontWeight: 700,
+                                                    }}
+                                                >
+                                                    MAX
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Divider */}
+                                    <div style={{ height: '1px', background: t.accent, opacity: 0.3, margin: '0 20px' }} />
+
+                                    {/* Destination zone */}
+                                    <DropZone title="Destination" wallets={destWallets} zone="dest" />
+
+                                    {/* Manual address input */}
+                                    <div style={{
+                                        padding: '8px 16px 12px',
+                                        borderTop: destWallets.length === 0 ? 'none' : `1px solid ${t.border}`,
+                                    }}>
+                                        <input
+                                            type="text"
+                                            value={manualDestAddr}
+                                            onChange={(e) => { setManualDestAddr(e.target.value); setQuoteData(null); setSwapStep('idle') }}
+                                            placeholder="Or paste destination address..."
+                                            style={{
+                                                width: '100%',
+                                                background: t.inputBg,
+                                                border: `1px solid ${t.cardBorder}`,
+                                                borderRadius: '8px',
+                                                padding: '10px 12px',
+                                                color: t.text,
+                                                fontSize: '11px',
+                                                fontFamily: "'JetBrains Mono', monospace",
+                                                outline: 'none',
+                                                boxSizing: 'border-box',
+                                            }}
+                                        />
+                                    </div>
+
+                                    {/* Quote error */}
+                                    {quoteError && (
+                                        <div style={{
+                                            padding: '8px 16px',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '6px',
+                                            color: '#DC3545',
+                                            fontSize: '11px',
+                                        }}>
+                                            <AlertTriangle size={12} />
+                                            {quoteError}
+                                        </div>
+                                    )}
+
+                                    {/* Quote preview */}
+                                    {quoteData && swapStep === 'confirming' && (
+                                        <div style={{
+                                            margin: '0 16px 12px',
+                                            background: t.statsBg,
+                                            border: `1px solid ${t.accentBorder}`,
+                                            borderRadius: '10px',
+                                            padding: '14px 16px',
+                                            display: 'flex',
+                                            flexDirection: 'column',
+                                            gap: '8px',
+                                        }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <span style={{ fontSize: '11px', color: t.textDim }}>You Send</span>
+                                                <span style={{ fontSize: '13px', fontWeight: 700, color: t.text, fontFamily: "'JetBrains Mono', monospace" }}>
+                                                    {quoteData.amountIn} {quoteData.tokenSymbol || 'SOL'}
+                                                </span>
+                                            </div>
+                                            {(quoteData.sources > 1) && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <span style={{ fontSize: '10px', color: t.textMuted }}>Source Wallets</span>
+                                                    <span style={{ fontSize: '11px', color: t.textSec, fontWeight: 600 }}>
+                                                        {quoteData.sources} wallets
+                                                    </span>
+                                                </div>
+                                            )}
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <span style={{ fontSize: '11px', color: t.textDim }}>{quoteData.recipients > 1 ? 'Total Received' : 'Recipient Gets'}</span>
+                                                <span style={{ fontSize: '13px', fontWeight: 700, color: t.green, fontFamily: "'JetBrains Mono', monospace" }}>
+                                                    ≈ {quoteData.amountOut} {quoteData.tokenSymbol || 'SOL'}
+                                                </span>
+                                            </div>
+                                            {quoteData.recipients > 1 && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <span style={{ fontSize: '10px', color: t.textMuted }}>Per Wallet ({quoteData.recipients} recipients)</span>
+                                                    <span style={{ fontSize: '11px', color: t.green, fontFamily: "'JetBrains Mono', monospace", fontWeight: 600 }}>
+                                                        ≈ {quoteData.perRecipientAmount} {quoteData.tokenSymbol || 'SOL'} each
+                                                    </span>
+                                                </div>
+                                            )}
+                                            <div style={{ height: '1px', background: t.border }} />
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <span style={{ fontSize: '10px', color: t.textMuted }}>Relayer Fee (est.)</span>
+                                                <span style={{ fontSize: '11px', color: t.textDim, fontFamily: "'JetBrains Mono', monospace" }}>
+                                                    ~{quoteData.estimatedFee} {quoteData.tokenSymbol || 'SOL'}
+                                                </span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <span style={{ fontSize: '10px', color: t.textMuted }}>Method</span>
+                                                <span style={{ fontSize: '11px', color: t.accent, fontWeight: 600 }}>
+                                                    ZK Privacy (on-chain)
+                                                </span>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Action buttons */}
+                                    <div style={{ padding: '8px 16px 16px' }}>
+                                        {swapStep === 'confirming' && quoteData ? (
+                                            <button
+                                                onClick={handleExecuteSwap}
+                                                style={{
+                                                    ...smallBtnStyle,
+                                                    width: '100%',
+                                                    padding: '12px',
+                                                    fontSize: '12px',
+                                                    fontWeight: 700,
+                                                    background: 'linear-gradient(135deg, #DC3545 0%, #a02030 100%)',
+                                                    color: '#fff',
+                                                    border: '1px solid rgba(220,53,69,0.5)',
+                                                    borderRadius: '10px',
+                                                    cursor: 'pointer',
+                                                    letterSpacing: '0.02em',
+                                                }}
+                                            >
+                                                Confirm Private Transfer
+                                            </button>
+                                        ) : (
+                                            <button
+                                                onClick={handleGetQuote}
+                                                disabled={quoteLoading || !swapAmount || sourceWallets.length === 0 || (!manualDestAddr.trim() && destWallets.length === 0)}
+                                                style={{
+                                                    ...smallBtnStyle,
+                                                    width: '100%',
+                                                    padding: '12px',
+                                                    fontSize: '12px',
+                                                    fontWeight: 700,
+                                                    background: (swapAmount && sourceWallets.length > 0 && (manualDestAddr.trim() || destWallets.length > 0))
+                                                        ? t.accent : t.inputBg,
+                                                    color: (swapAmount && sourceWallets.length > 0 && (manualDestAddr.trim() || destWallets.length > 0))
+                                                        ? '#fff' : t.textDim,
+                                                    border: `1px solid ${t.cardBorder}`,
+                                                    borderRadius: '10px',
+                                                    cursor: (swapAmount && sourceWallets.length > 0 && (manualDestAddr.trim() || destWallets.length > 0))
+                                                        ? 'pointer' : 'not-allowed',
+                                                    opacity: quoteLoading ? 0.7 : 1,
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    gap: '6px',
+                                                }}
+                                            >
+                                                {quoteLoading ? (
+                                                    <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Getting Quote...</>
+                                                ) : (
+                                                    'Get Quote'
+                                                )}
+                                            </button>
+                                        )}
+                                    </div>
+                                </>
+                            ) : (
+                                /* ── PRIVACY TRANSFER STATUS TRACKER ── */
+                                <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                    {/* Status steps */}
+                                    {(() => {
+                                        // Build dynamic steps based on source/dest count
+                                        const mtp = multiTransferProgress
+                                        const shieldSteps = sourceWallets.map((w, i) => ({
+                                            label: sourceWallets.length > 1 ? `Shield ${tokenSymbol} from ${w.name} (${i + 1}/${sourceWallets.length})` : `Shielding ${tokenSymbol}`,
+                                            key: `shield-${i}`,
+                                            phase: 'shield',
+                                            index: i,
+                                        }))
+                                        const destinations = getDestinationAddresses()
+                                        const unshieldSteps = destinations.map((d, i) => ({
+                                            label: destinations.length > 1 ? `Unshield → ${d.name} (${i + 1}/${destinations.length})` : `Unshielding to ${d.name}`,
+                                            key: `unshield-${i}`,
+                                            phase: 'unshield',
+                                            index: i,
+                                        }))
+                                        const steps = [...shieldSteps, ...unshieldSteps, { label: 'Complete', key: 'complete', phase: 'done', index: -1 }]
+
+                                        // Determine active step index
+                                        let activeIdx = 0
+                                        if (swapStep === 'shielding') {
+                                            activeIdx = Math.max(0, mtp.shieldIndex)
+                                        } else if (swapStep === 'unshielding') {
+                                            activeIdx = shieldSteps.length + Math.max(0, mtp.unshieldIndex)
+                                        } else if (swapStep === 'done') {
+                                            activeIdx = steps.length - 1
+                                        }
+
+                                        const isFailed = swapStep === 'error'
+
+                                        return (
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+                                                {steps.map((step, i) => {
+                                                    const isComplete = !isFailed && i < activeIdx
+                                                    const isActive = !isFailed && i === activeIdx
+                                                    // Check if this unshield step had an error
+                                                    const unshieldResult = step.phase === 'unshield' ? mtp.completedUnshields?.[step.index] : null
+                                                    const stepFailed = unshieldResult?.error
+
+                                                    return (
+                                                        <div key={step.key} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+                                                            {/* Dot + line */}
+                                                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '20px' }}>
+                                                                <div style={{
+                                                                    width: isActive ? '14px' : '10px',
+                                                                    height: isActive ? '14px' : '10px',
+                                                                    borderRadius: '50%',
+                                                                    background: (isFailed && i === activeIdx) || stepFailed ? '#DC3545'
+                                                                        : isComplete ? t.green
+                                                                            : isActive ? t.accent
+                                                                                : t.inputBg,
+                                                                    border: `2px solid ${(isFailed && i === activeIdx) || stepFailed ? '#DC3545'
+                                                                        : isComplete ? t.green
+                                                                            : isActive ? t.accent
+                                                                                : t.cardBorder}`,
+                                                                    transition: 'all 0.3s ease',
+                                                                    boxShadow: isActive ? `0 0 12px ${t.accent}40` : 'none',
+                                                                    animation: isActive && !isFailed ? 'pulse 2s ease-in-out infinite' : 'none',
+                                                                    display: 'flex',
+                                                                    alignItems: 'center',
+                                                                    justifyContent: 'center',
+                                                                    flexShrink: 0,
+                                                                    marginTop: '3px',
+                                                                }}>
+                                                                    {isComplete && !stepFailed && <Check size={6} style={{ color: '#fff' }} />}
+                                                                    {stepFailed && <span style={{ color: '#fff', fontSize: '8px', fontWeight: 700 }}>✕</span>}
+                                                                </div>
+                                                                {i < steps.length - 1 && (
+                                                                    <div style={{
+                                                                        width: '2px',
+                                                                        height: '28px',
+                                                                        background: isComplete ? t.green : t.cardBorder,
+                                                                        transition: 'background 0.3s ease',
+                                                                    }} />
+                                                                )}
+                                                            </div>
+                                                            {/* Label */}
+                                                            <span style={{
+                                                                fontSize: '12px',
+                                                                fontWeight: isActive ? 700 : 500,
+                                                                color: (isFailed && i === activeIdx) || stepFailed ? '#DC3545'
+                                                                    : isComplete ? t.green
+                                                                        : isActive ? t.text
+                                                                            : t.textMuted,
+                                                                paddingTop: '1px',
+                                                                transition: 'color 0.3s ease',
+                                                            }}>
+                                                                {step.label}{stepFailed ? ' — failed' : ''}
+                                                            </span>
+                                                        </div>
+                                                    )
+                                                })}
+                                            </div>
+                                        )
+                                    })()}
+
+                                    {/* Swap details */}
+                                    {activeSwap && (
+                                        <div style={{
+                                            background: t.statsBg,
+                                            border: `1px solid ${t.border}`,
+                                            borderRadius: '10px',
+                                            padding: '12px 14px',
+                                            display: 'flex',
+                                            flexDirection: 'column',
+                                            gap: '8px',
+                                            fontSize: '11px',
+                                        }}>
+                                            {activeSwap.amountSOL != null && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                    <span style={{ color: t.textDim }}>Total Amount</span>
+                                                    <span style={{ color: t.text, fontFamily: "'JetBrains Mono', monospace" }}>
+                                                        {activeSwap.amountSOL} {activeSwap.tokenSymbol || 'SOL'}
+                                                    </span>
+                                                </div>
+                                            )}
+                                            {activeSwap.feeSOL != null && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                    <span style={{ color: t.textDim }}>Total Fees</span>
+                                                    <span style={{ color: t.textSec, fontFamily: "'JetBrains Mono', monospace" }}>
+                                                        {activeSwap.feeSOL.toFixed(6)} {activeSwap.tokenSymbol || 'SOL'}
+                                                    </span>
+                                                </div>
+                                            )}
+                                            {/* Show completed unshield txs */}
+                                            {multiTransferProgress.completedUnshields.length > 0 && (
+                                                <>
+                                                    <div style={{ height: '1px', background: t.border }} />
+                                                    {multiTransferProgress.completedUnshields.map((u, i) => (
+                                                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                            <span style={{ color: u.error ? '#DC3545' : t.textDim, fontSize: '10px' }}>
+                                                                {u.name} {u.error ? '✕' : '✓'}
+                                                            </span>
+                                                            {u.tx ? (
+                                                                <button onClick={() => { navigator.clipboard.writeText(u.tx); setCopiedField(`tx-${i}`) }}
+                                                                    style={{ ...iconBtnStyle, fontSize: '10px', color: t.accent, fontFamily: "'JetBrains Mono', monospace", display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                                    {shortAddr(u.tx)}
+                                                                    {copiedField === `tx-${i}` ? <Check size={10} /> : <Copy size={10} />}
+                                                                </button>
+                                                            ) : (
+                                                                <span style={{ fontSize: '10px', color: '#DC3545' }}>failed</span>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                </>
+                                            )}
+                                            {activeSwap.statusLabel && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                    <span style={{ color: t.textDim }}>Status</span>
+                                                    <span style={{
+                                                        color: swapStep === 'done' ? t.green
+                                                            : swapStep === 'error' ? '#DC3545'
+                                                                : t.accent,
+                                                        fontWeight: 600,
+                                                    }}>
+                                                        {activeSwap.statusLabel}
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {/* Error message */}
+                                    {swapError && (
+                                        <div style={{
+                                            display: 'flex',
+                                            alignItems: 'flex-start',
+                                            gap: '8px',
+                                            padding: '10px 14px',
+                                            background: 'rgba(220,53,69,0.08)',
+                                            border: '1px solid rgba(220,53,69,0.2)',
+                                            borderRadius: '10px',
+                                            color: '#DC3545',
+                                            fontSize: '11px',
+                                            lineHeight: 1.5,
+                                        }}>
+                                            <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
+                                            <span>{swapError}</span>
+                                        </div>
+                                    )}
+
+                                    {/* Done / Reset button */}
+                                    {(swapStep === 'done' || swapStep === 'error') && (
+                                        <button
+                                            onClick={resetSwap}
+                                            style={{
+                                                ...smallBtnStyle,
+                                                width: '100%',
+                                                padding: '12px',
+                                                fontSize: '12px',
+                                                fontWeight: 700,
+                                                background: t.inputBg,
+                                                color: t.text,
+                                                border: `1px solid ${t.cardBorder}`,
+                                                borderRadius: '10px',
+                                                cursor: 'pointer',
+                                            }}
+                                        >
+                                            New Transfer
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </main>
+                </>)}
+
+                {/* ══════════════════════════════════════════
+                    PRIVATE SWAP VIEW
+                   ══════════════════════════════════════════ */}
+                {activeNav === 'Private Swap' && (
+                    <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto', background: t.bg }}>
+                        {/* Header bar */}
+                        <div style={{
+                            padding: '14px 28px',
                             borderBottom: `1px solid ${t.border}`,
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'space-between',
+                            background: t.statsBg,
                         }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <ArrowDownUp size={16} style={{ color: t.accent }} />
-                                <span style={{ fontSize: '13px', fontWeight: 700, color: t.text, letterSpacing: '-0.01em' }}>
-                                    Quick Private Transfer
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                <ArrowDownUp size={14} style={{ color: t.accent }} />
+                                <span style={{ fontSize: '10px', fontWeight: 600, color: t.textDim, letterSpacing: '0.1em', fontFamily: "'JetBrains Mono', monospace", textTransform: 'uppercase' }}>
+                                    Private Swap · ZK Shielded
                                 </span>
                             </div>
-                            {swapStep !== 'idle' && swapStep !== 'quoting' && (
+                            {swapStep !== 'idle' && swapStep !== 'quoting' && swapStep !== 'confirming' && (
                                 <button onClick={resetSwap} style={{ ...iconBtnStyle, fontSize: '10px', color: t.textDim }}>
                                     <X size={14} />
                                 </button>
                             )}
                         </div>
 
-                        {/* ── SWAP CONTENT ── */}
-                        {(swapStep === 'idle' || swapStep === 'quoting' || swapStep === 'confirming') ? (
-                            <>
-                                {/* Source wallets zone */}
-                                <DropZone title="Source" wallets={sourceWallets} zone="source" />
+                        {/* Main swap content — centered */}
+                        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', padding: '32px 20px', overflow: 'auto' }}>
+                            <div style={{ width: '100%', maxWidth: '440px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
 
-                                {/* Amount input */}
+                                {/* ── FROM PANEL ── */}
                                 <div style={{
-                                    padding: '12px 16px',
-                                    borderBottom: `1px solid ${t.border}`,
-                                    display: 'flex',
-                                    flexDirection: 'column',
-                                    gap: '6px',
+                                    background: t.cardBg,
+                                    border: `1px solid ${t.border}`,
+                                    borderRadius: '4px',
+                                    padding: '16px 20px',
                                 }}>
-                                    <span style={{ fontSize: '11px', fontWeight: 600, color: t.textDim, letterSpacing: '0.03em' }}>
-                                        AMOUNT (SOL)
-                                    </span>
-                                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                                        <span style={{ fontSize: '9px', fontWeight: 700, color: t.textDim, letterSpacing: '0.12em', fontFamily: "'JetBrains Mono', monospace" }}>
+                                            SOURCE
+                                        </span>
+                                        {sourceWallets.length > 0 && (
+                                            <span style={{ fontSize: '10px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>
+                                                {(sourceWallets[0]?.balance || 0).toFixed(4)} SOL
+                                            </span>
+                                        )}
+                                    </div>
+
+                                    {/* Source wallet select */}
+                                    <select
+                                        value={sourceWallets[0]?.id || ''}
+                                        onChange={(e) => {
+                                            const w = wallets.find(w => w.id === e.target.value)
+                                            if (w) setSourceWallets([w])
+                                            setQuoteData(null); setSwapStep('idle')
+                                        }}
+                                        style={{
+                                            width: '100%',
+                                            background: t.inputBg,
+                                            border: `1px solid ${t.cardBorder}`,
+                                            borderRadius: '2px',
+                                            padding: '8px 10px',
+                                            color: t.text,
+                                            fontSize: '12px',
+                                            fontFamily: "'JetBrains Mono', monospace",
+                                            outline: 'none',
+                                            cursor: 'pointer',
+                                            appearance: 'auto',
+                                            marginBottom: '8px',
+                                        }}
+                                    >
+                                        <option value="" disabled>Select source wallet</option>
+                                        {wallets.filter(w => !w.archived).map(w => (
+                                            <option key={w.id} value={w.id}>{w.name} — {(w.balance || 0).toFixed(4)} SOL</option>
+                                        ))}
+                                    </select>
+
+                                    {/* Amount row */}
+                                    <div style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '10px',
+                                        background: t.inputBg,
+                                        border: `1px solid ${t.cardBorder}`,
+                                        borderRadius: '2px',
+                                        padding: '8px 10px',
+                                    }}>
+                                        <img src={TOKEN_IMAGES.sol} alt="SOL" style={{ width: '24px', height: '24px', borderRadius: '2px' }} />
+                                        <span style={{ fontSize: '12px', fontWeight: 700, color: t.text, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>SOL</span>
                                         <input
                                             type="number"
                                             value={swapAmount}
@@ -1789,32 +2395,34 @@ export default function DashboardPage() {
                                             min="0"
                                             style={{
                                                 flex: 1,
-                                                background: t.inputBg,
-                                                border: `1px solid ${t.cardBorder}`,
-                                                borderRadius: '8px',
-                                                padding: '10px 12px',
+                                                background: 'transparent',
+                                                border: 'none',
                                                 color: t.text,
-                                                fontSize: '14px',
+                                                fontSize: '18px',
+                                                fontWeight: 600,
                                                 fontFamily: "'JetBrains Mono', monospace",
                                                 outline: 'none',
+                                                textAlign: 'right',
                                             }}
                                         />
                                         {sourceWallets.length > 0 && (
                                             <button
                                                 onClick={() => {
-                                                    const total = sourceWallets.reduce((s, w) => s + (w.balance || 0), 0)
-                                                    const maxAmt = Math.max(0, total - 0.002) // reserve for tx fee
-                                                    setSwapAmount(maxAmt.toFixed(6))
+                                                    const bal = sourceWallets[0]?.balance || 0
+                                                    setSwapAmount(Math.max(0, bal - 0.01).toFixed(6))
                                                     setQuoteData(null); setSwapStep('idle')
                                                 }}
                                                 style={{
-                                                    ...smallBtnStyle,
-                                                    fontSize: '10px',
-                                                    padding: '6px 10px',
-                                                    background: t.inputBg,
-                                                    border: `1px solid ${t.cardBorder}`,
-                                                    color: t.accent,
+                                                    padding: '3px 8px',
+                                                    fontSize: '9px',
                                                     fontWeight: 700,
+                                                    fontFamily: "'JetBrains Mono', monospace",
+                                                    letterSpacing: '0.06em',
+                                                    border: `1px solid ${t.accent}`,
+                                                    borderRadius: '2px',
+                                                    background: 'transparent',
+                                                    color: t.accent,
+                                                    cursor: 'pointer',
                                                 }}
                                             >
                                                 MAX
@@ -1823,94 +2431,295 @@ export default function DashboardPage() {
                                     </div>
                                 </div>
 
-                                {/* Divider */}
-                                <div style={{ height: '1px', background: t.accent, opacity: 0.3, margin: '0 20px' }} />
+                                {/* ── SWAP ARROW ── */}
+                                <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 0', position: 'relative' }}>
+                                    <div style={{
+                                        width: '28px',
+                                        height: '28px',
+                                        borderRadius: '2px',
+                                        background: t.statsBg,
+                                        border: `1px solid ${t.border}`,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        zIndex: 2,
+                                    }}>
+                                        <ArrowDownUp size={12} style={{ color: t.accent }} />
+                                    </div>
+                                    <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: '1px', background: t.border }} />
+                                </div>
 
-                                {/* Destination zone */}
-                                <DropZone title="Destination" wallets={destWallets} zone="dest" />
-
-                                {/* Manual address input */}
+                                {/* ── TO PANEL ── */}
                                 <div style={{
-                                    padding: '8px 16px 12px',
-                                    borderTop: destWallets.length === 0 ? 'none' : `1px solid ${t.border}`,
+                                    background: t.cardBg,
+                                    border: `1px solid ${t.border}`,
+                                    borderRadius: '4px',
+                                    padding: '16px 20px',
                                 }}>
-                                    <input
-                                        type="text"
-                                        value={manualDestAddr}
-                                        onChange={(e) => { setManualDestAddr(e.target.value); setQuoteData(null); setSwapStep('idle') }}
-                                        placeholder="Or paste destination address..."
+                                    <span style={{ fontSize: '9px', fontWeight: 700, color: t.textDim, letterSpacing: '0.12em', fontFamily: "'JetBrains Mono', monospace", display: 'block', marginBottom: '10px' }}>
+                                        RECEIVE TOKEN
+                                    </span>
+
+                                    {/* Token grid — 2 col */}
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', marginBottom: '12px' }}>
+                                        {SUPPORTED_TOKENS.map(tk => {
+                                            const isActive = selectedToken === tk.name
+                                            return (
+                                                <button
+                                                    key={tk.name}
+                                                    onClick={() => { setSelectedToken(tk.name); setQuoteData(null); setSwapStep('idle'); setQuoteError('') }}
+                                                    style={{
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        gap: '8px',
+                                                        padding: '8px 10px',
+                                                        borderRadius: '2px',
+                                                        border: isActive ? `1px solid ${t.accent}` : `1px solid ${t.cardBorder}`,
+                                                        background: isActive ? t.accentBg : t.inputBg,
+                                                        cursor: 'pointer',
+                                                        transition: 'all 0.15s ease',
+                                                        boxShadow: isActive ? `inset 0 0 0 1px ${t.accent}` : 'none',
+                                                    }}
+                                                >
+                                                    <img
+                                                        src={TOKEN_IMAGES[tk.name]}
+                                                        alt={tk.name}
+                                                        style={{
+                                                            width: '20px',
+                                                            height: '20px',
+                                                            borderRadius: '2px',
+                                                            flexShrink: 0,
+                                                        }}
+                                                    />
+                                                    <span style={{
+                                                        fontSize: '11px',
+                                                        fontWeight: isActive ? 700 : 500,
+                                                        fontFamily: "'JetBrains Mono', monospace",
+                                                        color: isActive ? t.accent : t.textMuted,
+                                                        letterSpacing: '0.04em',
+                                                    }}>
+                                                        {tk.name.toUpperCase()}
+                                                    </span>
+                                                </button>
+                                            )
+                                        })}
+                                    </div>
+
+                                    {/* Destination */}
+                                    <span style={{ fontSize: '9px', fontWeight: 700, color: t.textDim, letterSpacing: '0.12em', fontFamily: "'JetBrains Mono', monospace", display: 'block', marginBottom: '6px' }}>
+                                        DESTINATION
+                                    </span>
+                                    <select
+                                        value={destWallets[0]?.id || (manualDestAddr ? '__manual__' : '')}
+                                        onChange={(e) => {
+                                            if (e.target.value === '__manual__') {
+                                                setDestWallets([])
+                                            } else {
+                                                const w = wallets.find(w => w.id === e.target.value)
+                                                if (w) { setDestWallets([w]); setManualDestAddr('') }
+                                            }
+                                            setQuoteData(null); setSwapStep('idle')
+                                        }}
                                         style={{
                                             width: '100%',
                                             background: t.inputBg,
                                             border: `1px solid ${t.cardBorder}`,
-                                            borderRadius: '8px',
-                                            padding: '10px 12px',
+                                            borderRadius: '2px',
+                                            padding: '8px 10px',
                                             color: t.text,
-                                            fontSize: '11px',
+                                            fontSize: '12px',
                                             fontFamily: "'JetBrains Mono', monospace",
                                             outline: 'none',
-                                            boxSizing: 'border-box',
+                                            cursor: 'pointer',
+                                            appearance: 'auto',
                                         }}
-                                    />
+                                    >
+                                        <option value="" disabled>Select destination wallet</option>
+                                        {wallets.filter(w => !w.archived).map(w => (
+                                            <option key={w.id} value={w.id}>{w.name} — {shortAddr(w.address)}</option>
+                                        ))}
+                                        <option value="__manual__">Custom address...</option>
+                                    </select>
+
+                                    {/* Manual address */}
+                                    {destWallets.length === 0 && (
+                                        <input
+                                            type="text"
+                                            value={manualDestAddr}
+                                            onChange={(e) => { setManualDestAddr(e.target.value); setQuoteData(null); setSwapStep('idle') }}
+                                            placeholder="Paste destination address..."
+                                            style={{
+                                                width: '100%',
+                                                background: t.inputBg,
+                                                border: `1px solid ${t.cardBorder}`,
+                                                borderRadius: '2px',
+                                                padding: '8px 10px',
+                                                color: t.text,
+                                                fontSize: '11px',
+                                                fontFamily: "'JetBrains Mono', monospace",
+                                                outline: 'none',
+                                                boxSizing: 'border-box',
+                                                marginTop: '4px',
+                                            }}
+                                        />
+                                    )}
                                 </div>
 
-                                {/* Quote error */}
+                                {/* ── QUOTE ERROR ── */}
                                 {quoteError && (
                                     <div style={{
-                                        padding: '8px 16px',
                                         display: 'flex',
                                         alignItems: 'center',
                                         gap: '6px',
+                                        padding: '8px 12px',
+                                        background: 'rgba(220,53,69,0.06)',
+                                        border: '1px solid rgba(220,53,69,0.15)',
+                                        borderRadius: '2px',
                                         color: '#DC3545',
-                                        fontSize: '11px',
+                                        fontSize: '10px',
+                                        fontFamily: "'JetBrains Mono', monospace",
                                     }}>
-                                        <AlertTriangle size={12} />
+                                        <AlertTriangle size={11} />
                                         {quoteError}
                                     </div>
                                 )}
 
-                                {/* Quote preview */}
+                                {/* ── QUOTE PREVIEW ── */}
                                 {quoteData && swapStep === 'confirming' && (
                                     <div style={{
-                                        margin: '0 16px 12px',
                                         background: t.statsBg,
-                                        border: `1px solid ${t.accentBorder}`,
-                                        borderRadius: '10px',
-                                        padding: '14px 16px',
+                                        border: `1px solid ${t.border}`,
+                                        borderRadius: '4px',
+                                        padding: '12px 16px',
                                         display: 'flex',
                                         flexDirection: 'column',
-                                        gap: '8px',
+                                        gap: '6px',
                                     }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <span style={{ fontSize: '11px', color: t.textDim }}>You Send</span>
-                                            <span style={{ fontSize: '13px', fontWeight: 700, color: t.text, fontFamily: "'JetBrains Mono', monospace" }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                <img src={TOKEN_IMAGES.sol} alt="SOL" style={{ width: '14px', height: '14px', borderRadius: '2px' }} />
+                                                <span style={{ fontSize: '10px', color: t.textDim, fontFamily: "'JetBrains Mono', monospace" }}>SEND</span>
+                                            </div>
+                                            <span style={{ fontSize: '12px', fontWeight: 700, color: t.text, fontFamily: "'JetBrains Mono', monospace" }}>
                                                 {quoteData.amountIn} SOL
                                             </span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <span style={{ fontSize: '11px', color: t.textDim }}>Recipient Gets</span>
-                                            <span style={{ fontSize: '13px', fontWeight: 700, color: t.green, fontFamily: "'JetBrains Mono', monospace" }}>
-                                                ≈ {quoteData.amountOut} SOL
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                <img src={TOKEN_IMAGES[selectedToken]} alt={tokenSymbol} style={{ width: '14px', height: '14px', borderRadius: '2px' }} />
+                                                <span style={{ fontSize: '10px', color: t.textDim, fontFamily: "'JetBrains Mono', monospace" }}>RECEIVE</span>
+                                            </div>
+                                            <span style={{ fontSize: '12px', fontWeight: 700, color: t.green, fontFamily: "'JetBrains Mono', monospace" }}>
+                                                ≈ {quoteData.amountOut} {quoteData.tokenSymbol}
                                             </span>
                                         </div>
                                         <div style={{ height: '1px', background: t.border }} />
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <span style={{ fontSize: '10px', color: t.textMuted }}>Relayer Fee (est.)</span>
-                                            <span style={{ fontSize: '11px', color: t.textDim, fontFamily: "'JetBrains Mono', monospace" }}>
-                                                ~{quoteData.estimatedFee} SOL
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                            <span style={{ fontSize: '9px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>FEE (EST.)</span>
+                                            <span style={{ fontSize: '10px', color: t.textDim, fontFamily: "'JetBrains Mono', monospace" }}>
+                                                ~{quoteData.estimatedFee} {quoteData.tokenSymbol}
                                             </span>
                                         </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <span style={{ fontSize: '10px', color: t.textMuted }}>Method</span>
-                                            <span style={{ fontSize: '11px', color: t.accent, fontWeight: 600 }}>
-                                                ZK Privacy (on-chain)
-                                            </span>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                            <span style={{ fontSize: '9px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>METHOD</span>
+                                            <span style={{ fontSize: '10px', color: t.accent, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>ZK PRIVACY</span>
                                         </div>
                                     </div>
                                 )}
 
-                                {/* Action buttons */}
-                                <div style={{ padding: '8px 16px 16px' }}>
+                                {/* ── PROGRESS TRACKER ── */}
+                                {(swapStep === 'shielding' || swapStep === 'unshielding' || swapStep === 'done' || swapStep === 'error') && (
+                                    <div style={{
+                                        background: t.cardBg,
+                                        border: `1px solid ${t.border}`,
+                                        borderRadius: '4px',
+                                        padding: '14px 16px',
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: '10px',
+                                    }}>
+                                        {(() => {
+                                            const steps = [
+                                                { label: 'SHIELD SOL', key: 'shield-0' },
+                                                { label: `UNSHIELD ${tokenSymbol}`, key: 'unshield-0' },
+                                                { label: 'COMPLETE', key: 'complete' },
+                                            ]
+                                            let activeIdx = 0
+                                            if (swapStep === 'shielding') activeIdx = 0
+                                            else if (swapStep === 'unshielding') activeIdx = 1
+                                            else if (swapStep === 'done') activeIdx = steps.length - 1
+                                            const isFailed = swapStep === 'error'
+
+                                            return (
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+                                                    {steps.map((step, i) => {
+                                                        const isComplete = !isFailed && i < activeIdx
+                                                        const isActive = !isFailed && i === activeIdx
+                                                        return (
+                                                            <div key={step.key} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '16px' }}>
+                                                                    <div style={{
+                                                                        width: isActive ? '10px' : '8px',
+                                                                        height: isActive ? '10px' : '8px',
+                                                                        borderRadius: '1px',
+                                                                        background: (isFailed && i === activeIdx) ? '#DC3545' : isComplete ? t.green : isActive ? t.accent : t.inputBg,
+                                                                        border: `1px solid ${(isFailed && i === activeIdx) ? '#DC3545' : isComplete ? t.green : isActive ? t.accent : t.cardBorder}`,
+                                                                        transition: 'all 0.3s ease',
+                                                                        animation: isActive ? 'pulse 1.5s ease-in-out infinite' : 'none',
+                                                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                                    }}>
+                                                                        {isComplete && <Check size={5} style={{ color: '#fff' }} />}
+                                                                    </div>
+                                                                    {i < steps.length - 1 && (
+                                                                        <div style={{ width: '1px', height: '14px', background: isComplete ? t.green : t.border, transition: 'background 0.3s ease' }} />
+                                                                    )}
+                                                                </div>
+                                                                <span style={{
+                                                                    fontSize: '10px',
+                                                                    fontWeight: isActive ? 700 : 500,
+                                                                    fontFamily: "'JetBrains Mono', monospace",
+                                                                    letterSpacing: '0.06em',
+                                                                    color: (isFailed && i === activeIdx) ? '#DC3545' : isComplete ? t.green : isActive ? t.text : t.textMuted,
+                                                                }}>
+                                                                    {step.label}
+                                                                </span>
+                                                            </div>
+                                                        )
+                                                    })}
+                                                </div>
+                                            )
+                                        })()}
+
+                                        {/* Status */}
+                                        {activeSwap && (
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: `1px solid ${t.border}`, paddingTop: '8px' }}>
+                                                <span style={{ fontSize: '9px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>STATUS</span>
+                                                <span style={{ fontSize: '10px', color: swapStep === 'done' ? t.green : swapStep === 'error' ? '#DC3545' : t.accent, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>
+                                                    {activeSwap.statusLabel}
+                                                </span>
+                                            </div>
+                                        )}
+
+                                        {/* Error */}
+                                        {swapError && (
+                                            <div style={{
+                                                display: 'flex', alignItems: 'flex-start', gap: '6px',
+                                                padding: '8px 10px',
+                                                background: 'rgba(220,53,69,0.06)',
+                                                border: '1px solid rgba(220,53,69,0.12)',
+                                                borderRadius: '2px',
+                                                color: '#DC3545', fontSize: '10px', lineHeight: 1.5,
+                                                fontFamily: "'JetBrains Mono', monospace",
+                                            }}>
+                                                <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: '1px' }} />
+                                                <span>{swapError}</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* ── ACTION BUTTON ── */}
+                                <div style={{ marginTop: '4px' }}>
                                     {swapStep === 'confirming' && quoteData ? (
                                         <button
                                             onClick={handleExecuteSwap}
@@ -1918,235 +2727,75 @@ export default function DashboardPage() {
                                                 ...smallBtnStyle,
                                                 width: '100%',
                                                 padding: '12px',
-                                                fontSize: '12px',
+                                                fontSize: '11px',
                                                 fontWeight: 700,
+                                                fontFamily: "'JetBrains Mono', monospace",
+                                                letterSpacing: '0.08em',
+                                                textTransform: 'uppercase',
                                                 background: 'linear-gradient(135deg, #DC3545 0%, #a02030 100%)',
                                                 color: '#fff',
                                                 border: '1px solid rgba(220,53,69,0.5)',
-                                                borderRadius: '10px',
+                                                borderRadius: '2px',
                                                 cursor: 'pointer',
-                                                letterSpacing: '0.02em',
                                             }}
                                         >
-                                            Confirm Private Transfer
+                                            Confirm Private Swap
                                         </button>
-                                    ) : (
+                                    ) : (swapStep === 'done' || swapStep === 'error') ? (
                                         <button
-                                            onClick={handleGetQuote}
-                                            disabled={quoteLoading || !swapAmount || sourceWallets.length === 0 || (!manualDestAddr.trim() && destWallets.length === 0)}
+                                            onClick={resetSwap}
                                             style={{
                                                 ...smallBtnStyle,
                                                 width: '100%',
                                                 padding: '12px',
-                                                fontSize: '12px',
+                                                fontSize: '11px',
                                                 fontWeight: 700,
-                                                background: (swapAmount && sourceWallets.length > 0 && (manualDestAddr.trim() || destWallets.length > 0))
-                                                    ? t.accent : t.inputBg,
-                                                color: (swapAmount && sourceWallets.length > 0 && (manualDestAddr.trim() || destWallets.length > 0))
-                                                    ? '#fff' : t.textDim,
+                                                fontFamily: "'JetBrains Mono', monospace",
+                                                letterSpacing: '0.08em',
+                                                textTransform: 'uppercase',
+                                                background: t.inputBg,
+                                                color: t.text,
                                                 border: `1px solid ${t.cardBorder}`,
-                                                borderRadius: '10px',
-                                                cursor: (swapAmount && sourceWallets.length > 0 && (manualDestAddr.trim() || destWallets.length > 0))
-                                                    ? 'pointer' : 'not-allowed',
-                                                opacity: quoteLoading ? 0.7 : 1,
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                                gap: '6px',
+                                                borderRadius: '2px',
+                                                cursor: 'pointer',
+                                            }}
+                                        >
+                                            New Swap
+                                        </button>
+                                    ) : swapStep === 'idle' || swapStep === 'quoting' ? (
+                                        <button
+                                            onClick={handleGetQuote}
+                                            disabled={quoteLoading || !swapAmount || parseFloat(swapAmount) <= 0}
+                                            style={{
+                                                ...smallBtnStyle,
+                                                width: '100%',
+                                                padding: '12px',
+                                                fontSize: '11px',
+                                                fontWeight: 700,
+                                                fontFamily: "'JetBrains Mono', monospace",
+                                                letterSpacing: '0.08em',
+                                                textTransform: 'uppercase',
+                                                background: (!swapAmount || parseFloat(swapAmount) <= 0)
+                                                    ? t.inputBg : 'linear-gradient(135deg, #DC3545 0%, #a02030 100%)',
+                                                color: (!swapAmount || parseFloat(swapAmount) <= 0) ? t.textDim : '#fff',
+                                                border: `1px solid ${(!swapAmount || parseFloat(swapAmount) <= 0) ? t.cardBorder : 'rgba(220,53,69,0.5)'}`,
+                                                borderRadius: '2px',
+                                                cursor: (!swapAmount || parseFloat(swapAmount) <= 0) ? 'not-allowed' : 'pointer',
+                                                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
                                             }}
                                         >
                                             {quoteLoading ? (
-                                                <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Getting Quote...</>
+                                                <><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Getting Quote...</>
                                             ) : (
                                                 'Get Quote'
                                             )}
                                         </button>
-                                    )}
+                                    ) : null}
                                 </div>
-                            </>
-                        ) : (
-                            /* ── PRIVACY TRANSFER STATUS TRACKER ── */
-                            <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                                {/* Status steps */}
-                                {(() => {
-                                    const steps = [
-                                        { label: 'Generating ZK Proof', key: 'proof' },
-                                        { label: 'Shielding SOL', key: 'shielding' },
-                                        { label: 'Unshielding to Destination', key: 'unshielding' },
-                                        { label: 'Confirming on-chain', key: 'confirming' },
-                                        { label: 'Complete', key: 'complete' },
-                                    ]
-
-                                    let activeIdx = 0
-                                    if (privacyStatus === PRIVACY_STATUS.GENERATING_PROOF && swapStep === 'shielding') activeIdx = 0
-                                    else if (privacyStatus === PRIVACY_STATUS.SUBMITTING && swapStep === 'shielding') activeIdx = 1
-                                    else if (swapStep === 'unshielding' && privacyStatus === PRIVACY_STATUS.GENERATING_PROOF) activeIdx = 2
-                                    else if (swapStep === 'unshielding' && (privacyStatus === PRIVACY_STATUS.SUBMITTING || privacyStatus === PRIVACY_STATUS.CONFIRMING)) activeIdx = 3
-                                    else if (swapStep === 'done') activeIdx = 4
-                                    else if (swapStep === 'shielding') activeIdx = 0
-                                    else if (swapStep === 'unshielding') activeIdx = 2
-
-                                    const isFailed = swapStep === 'error'
-
-                                    return (
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
-                                            {steps.map((step, i) => {
-                                                const isComplete = !isFailed && i < activeIdx
-                                                const isActive = !isFailed && i === activeIdx
-
-                                                return (
-                                                    <div key={step.key} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
-                                                        {/* Dot + line */}
-                                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '20px' }}>
-                                                            <div style={{
-                                                                width: isActive ? '14px' : '10px',
-                                                                height: isActive ? '14px' : '10px',
-                                                                borderRadius: '50%',
-                                                                background: isFailed && i === activeIdx ? '#DC3545'
-                                                                    : isComplete ? t.green
-                                                                        : isActive ? t.accent
-                                                                            : t.inputBg,
-                                                                border: `2px solid ${isFailed && i === activeIdx ? '#DC3545'
-                                                                    : isComplete ? t.green
-                                                                        : isActive ? t.accent
-                                                                            : t.cardBorder}`,
-                                                                transition: 'all 0.3s ease',
-                                                                boxShadow: isActive ? `0 0 12px ${t.accent}40` : 'none',
-                                                                animation: isActive && !isFailed ? 'pulse 2s ease-in-out infinite' : 'none',
-                                                                display: 'flex',
-                                                                alignItems: 'center',
-                                                                justifyContent: 'center',
-                                                                flexShrink: 0,
-                                                                marginTop: '3px',
-                                                            }}>
-                                                                {isComplete && <Check size={6} style={{ color: '#fff' }} />}
-                                                            </div>
-                                                            {i < steps.length - 1 && (
-                                                                <div style={{
-                                                                    width: '2px',
-                                                                    height: '28px',
-                                                                    background: isComplete ? t.green : t.cardBorder,
-                                                                    transition: 'background 0.3s ease',
-                                                                }} />
-                                                            )}
-                                                        </div>
-                                                        {/* Label */}
-                                                        <span style={{
-                                                            fontSize: '12px',
-                                                            fontWeight: isActive ? 700 : 500,
-                                                            color: isFailed && i === activeIdx ? '#DC3545'
-                                                                : isComplete ? t.green
-                                                                    : isActive ? t.text
-                                                                        : t.textMuted,
-                                                            paddingTop: '1px',
-                                                            transition: 'color 0.3s ease',
-                                                        }}>
-                                                            {step.label}
-                                                        </span>
-                                                    </div>
-                                                )
-                                            })}
-                                        </div>
-                                    )
-                                })()}
-
-                                {/* Swap details */}
-                                {activeSwap && (
-                                    <div style={{
-                                        background: t.statsBg,
-                                        border: `1px solid ${t.border}`,
-                                        borderRadius: '10px',
-                                        padding: '12px 14px',
-                                        display: 'flex',
-                                        flexDirection: 'column',
-                                        gap: '8px',
-                                        fontSize: '11px',
-                                    }}>
-                                        {activeSwap.amountSOL != null && (
-                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                <span style={{ color: t.textDim }}>Amount</span>
-                                                <span style={{ color: t.text, fontFamily: "'JetBrains Mono', monospace" }}>
-                                                    {activeSwap.amountSOL} SOL
-                                                </span>
-                                            </div>
-                                        )}
-                                        {activeSwap.feeSOL != null && (
-                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                <span style={{ color: t.textDim }}>Relayer Fee</span>
-                                                <span style={{ color: t.textSec, fontFamily: "'JetBrains Mono', monospace" }}>
-                                                    {activeSwap.feeSOL.toFixed(6)} SOL
-                                                </span>
-                                            </div>
-                                        )}
-                                        {activeSwap.txId && (
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                <span style={{ color: t.textDim }}>TX Sig</span>
-                                                <button onClick={() => { navigator.clipboard.writeText(activeSwap.txId); setCopiedField('txsig') }}
-                                                    style={{ ...iconBtnStyle, fontSize: '10px', color: t.accent, fontFamily: "'JetBrains Mono', monospace", display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                    {shortAddr(activeSwap.txId)}
-                                                    {copiedField === 'txsig' ? <Check size={10} /> : <Copy size={10} />}
-                                                </button>
-                                            </div>
-                                        )}
-                                        {activeSwap.statusLabel && (
-                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                <span style={{ color: t.textDim }}>Status</span>
-                                                <span style={{
-                                                    color: swapStep === 'done' ? t.green
-                                                        : swapStep === 'error' ? '#DC3545'
-                                                            : t.accent,
-                                                    fontWeight: 600,
-                                                }}>
-                                                    {activeSwap.statusLabel}
-                                                </span>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-
-                                {/* Error message */}
-                                {swapError && (
-                                    <div style={{
-                                        display: 'flex',
-                                        alignItems: 'flex-start',
-                                        gap: '8px',
-                                        padding: '10px 14px',
-                                        background: 'rgba(220,53,69,0.08)',
-                                        border: '1px solid rgba(220,53,69,0.2)',
-                                        borderRadius: '10px',
-                                        color: '#DC3545',
-                                        fontSize: '11px',
-                                        lineHeight: 1.5,
-                                    }}>
-                                        <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
-                                        <span>{swapError}</span>
-                                    </div>
-                                )}
-
-                                {/* Done / Reset button */}
-                                {(swapStep === 'done' || swapStep === 'error') && (
-                                    <button
-                                        onClick={resetSwap}
-                                        style={{
-                                            ...smallBtnStyle,
-                                            width: '100%',
-                                            padding: '12px',
-                                            fontSize: '12px',
-                                            fontWeight: 700,
-                                            background: t.inputBg,
-                                            color: t.text,
-                                            border: `1px solid ${t.cardBorder}`,
-                                            borderRadius: '10px',
-                                            cursor: 'pointer',
-                                        }}
-                                    >
-                                        New Transfer
-                                    </button>
-                                )}
                             </div>
-                        )}
-                    </div>
-                </main>
+                        </div>
+                    </main>
+                )}
             </div>
 
             {/* Private Key Modal */}
