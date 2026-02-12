@@ -56,15 +56,16 @@ const NAV_ITEMS = [
     { icon: DollarSign, label: 'Earn' },
 ]
 
-/* ── Token image URLs ── */
+/* ── Token image URLs (self-hosted in /public/tokens/) ── */
 const TOKEN_IMAGES = {
-    sol: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png',
-    usdc: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/logo.png',
-    usdt: 'https://assets.coingecko.com/coins/images/325/standard/Tether.png',
-    zec: 'https://assets.coingecko.com/coins/images/486/standard/circle-zcash-color.png',
-    ore: 'https://assets.coingecko.com/coins/images/36015/standard/Ore_logo.png',
-    store: 'https://assets.coingecko.com/coins/images/40296/standard/store-200.png',
+    sol: '/tokens/sol.png',
+    usdc: '/tokens/usdc.png',
+    usdt: '/tokens/usdt.webp',
+    zec: '/tokens/zec.svg',
+    ore: '/tokens/ore.webp',
+    store: '/tokens/store.svg',
 }
+
 
 /* ── CoinGecko ID mapping for price lookups ── */
 const COINGECKO_TOKEN_MAP = {
