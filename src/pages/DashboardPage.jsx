@@ -209,6 +209,9 @@ export default function DashboardPage() {
     const swapPollRef = useRef(null)
     const [multiTransferProgress, setMultiTransferProgress] = useState({ shieldIndex: -1, unshieldIndex: -1, shieldTotal: 0, unshieldTotal: 0, completedUnshields: [] })
     const [selectedToken, setSelectedToken] = useState('sol')  // sol | usdc | usdt | zec | ore | store
+    const [recovering, setRecovering] = useState(false)  // recovery in progress
+    const [recoveryStatus, setRecoveryStatus] = useState('')  // status message for recovery
+    const [shieldedBalance, setShieldedBalance] = useState(null)  // cached pool balance in lamports
     const tokenInfo = SUPPORTED_TOKENS.find(t => t.name === selectedToken) || SUPPORTED_TOKENS[0]
     const tokenSymbol = selectedToken.toUpperCase()
     const isSPL = selectedToken !== 'sol'
@@ -852,6 +855,53 @@ export default function DashboardPage() {
         if (manualDestAddr.trim()) addrs.push({ address: manualDestAddr.trim(), name: 'Manual Address' })
         destWallets.forEach(w => addrs.push({ address: w.address, name: w.name }))
         return addrs
+    }
+
+    /* ── Recover shielded funds from privacy pool ── */
+    const handleRecoverFunds = async () => {
+        setRecovering(true)
+        setRecoveryStatus('Checking shielded balance...')
+        const rpcUrl = import.meta.env.DEV
+            ? (import.meta.env.VITE_SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com')
+            : `${window.location.origin}/api/rpc`
+
+        try {
+            // Pick the first non-archived wallet that has a secret key as the recovery wallet
+            const recoveryWallet = fullWalletsRef.current.find(w => !w.archived && w.secretKey)
+            if (!recoveryWallet) {
+                setRecoveryStatus('ERROR: No wallet with private key available for recovery')
+                setRecovering(false)
+                return
+            }
+            const client = initPrivacyCash(rpcUrl, recoveryWallet.secretKey)
+            const balResult = await getPrivateBalance(client)
+            const balLamports = balResult?.lamports || 0
+            const balSOL = lamportsToSol(balLamports)
+            setShieldedBalance(balLamports)
+
+            if (balLamports <= 0) {
+                setRecoveryStatus('No shielded funds found in the privacy pool')
+                setTimeout(() => { setRecovering(false); setRecoveryStatus('') }, 3000)
+                return
+            }
+
+            setRecoveryStatus(`Found ${balSOL.toFixed(6)} shielded SOL — unshielding to ${recoveryWallet.name}...`)
+
+            const result = await unshieldSol(client, balSOL, recoveryWallet.address, setPrivacyStatus)
+            const fee = lamportsToSol(result.fee_in_lamports || 0)
+
+            setRecoveryStatus(`✓ Recovered ${(balSOL - fee).toFixed(6)} SOL to ${recoveryWallet.name} (fee: ${fee.toFixed(6)} SOL)`)
+            setShieldedBalance(0)
+
+            // Refresh wallet balances
+            await fetchLiveBalances()
+
+            setTimeout(() => { setRecovering(false); setRecoveryStatus('') }, 5000)
+        } catch (err) {
+            console.error('Recovery failed:', err)
+            setRecoveryStatus(`ERROR: ${err.message}`)
+            setTimeout(() => setRecovering(false), 5000)
+        }
     }
 
     const handleGetQuote = async () => {
@@ -2365,12 +2415,41 @@ export default function DashboardPage() {
                                         Private Swap · ZK Shielded
                                     </span>
                                 </div>
-                                {swapStep !== 'idle' && swapStep !== 'quoting' && swapStep !== 'confirming' && (
-                                    <button onClick={resetSwap} style={{ ...iconBtnStyle, fontSize: '10px', color: t.textDim, position: 'absolute', right: '20px' }}>
-                                        <X size={14} />
-                                    </button>
-                                )}
+                                <button
+                                    onClick={handleRecoverFunds}
+                                    disabled={recovering}
+                                    style={{
+                                        position: 'absolute', right: '20px',
+                                        display: 'flex', alignItems: 'center', gap: '6px',
+                                        padding: '5px 12px', fontSize: '9px', fontWeight: 700,
+                                        fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.06em',
+                                        border: `1px solid ${recovering ? t.cardBorder : 'rgba(34,197,94,0.4)'}`,
+                                        borderRadius: '2px', cursor: recovering ? 'wait' : 'pointer',
+                                        background: recovering ? t.inputBg : 'rgba(34,197,94,0.08)',
+                                        color: recovering ? t.textMuted : (t.green || '#22c55e'),
+                                        textTransform: 'uppercase', transition: 'all 0.15s ease',
+                                    }}
+                                >
+                                    {recovering ? <Loader2 size={10} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={10} />}
+                                    {recovering ? 'Recovering...' : 'Recover Funds'}
+                                </button>
                             </div>
+                            {/* Recovery status bar */}
+                            {recoveryStatus && (
+                                <div style={{
+                                    padding: '8px 28px', borderBottom: `1px solid ${t.border}`,
+                                    background: recoveryStatus.startsWith('ERROR') ? 'rgba(220,53,69,0.06)' : recoveryStatus.startsWith('✓') ? 'rgba(34,197,94,0.06)' : t.statsBg,
+                                    display: 'flex', alignItems: 'center', gap: '8px',
+                                }}>
+                                    {recoveryStatus.startsWith('ERROR') ? <AlertTriangle size={11} style={{ color: '#DC3545', flexShrink: 0 }} /> : recoveryStatus.startsWith('✓') ? <Check size={11} style={{ color: t.green || '#22c55e', flexShrink: 0 }} /> : <Loader2 size={11} style={{ color: t.accent, animation: 'spin 1s linear infinite', flexShrink: 0 }} />}
+                                    <span style={{
+                                        fontSize: '10px', fontFamily: "'JetBrains Mono', monospace",
+                                        color: recoveryStatus.startsWith('ERROR') ? '#DC3545' : recoveryStatus.startsWith('✓') ? (t.green || '#22c55e') : t.text,
+                                    }}>
+                                        {recoveryStatus}
+                                    </span>
+                                </div>
+                            )}
 
                             {/* ── WALLET STRIP (horizontal, top) ── */}
                             <div style={{
