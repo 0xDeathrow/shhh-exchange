@@ -2428,7 +2428,7 @@ export default function DashboardPage() {
                                     onDragLeave={() => setDragOverZone(null)}
                                     onDrop={(e) => handleDrop(e, 'source')}
                                     style={{
-                                        width: '320px', minWidth: '260px', display: 'flex', flexDirection: 'column',
+                                        flex: 1, display: 'flex', flexDirection: 'column',
                                         borderRight: `1px solid ${t.border}`,
                                         background: dragOverZone === 'source' ? t.dropHighlight : 'transparent',
                                         transition: 'background 0.2s ease', overflow: 'hidden', flexShrink: 0,
@@ -2701,7 +2701,7 @@ export default function DashboardPage() {
                                     onDragLeave={() => setDragOverZone(null)}
                                     onDrop={(e) => handleDrop(e, 'dest')}
                                     style={{
-                                        width: '320px', minWidth: '260px', display: 'flex', flexDirection: 'column',
+                                        flex: 1, display: 'flex', flexDirection: 'column',
                                         borderLeft: `1px solid ${t.border}`,
                                         background: dragOverZone === 'dest' ? t.dropHighlight : 'transparent',
                                         transition: 'background 0.2s ease', overflow: 'hidden', flexShrink: 0,
