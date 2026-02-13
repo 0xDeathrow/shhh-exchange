@@ -1050,11 +1050,9 @@ export default function DashboardPage() {
 
                 try {
                     let unshieldResult
-                    if (effectiveIsSPL) {
-                        unshieldResult = await unshieldSPL(primaryClient, tokenInfo.pubkey.toString(), perRecipientAmt, dest.address, setPrivacyStatus)
-                    } else {
-                        unshieldResult = await unshieldSol(primaryClient, perRecipientAmt, dest.address, setPrivacyStatus)
-                    }
+                    // Always unshield as SOL — privacy pool is per-token, we shielded SOL
+                    // Cross-token swap (e.g. SOL→USDC) would need a separate DEX step after unshielding
+                    unshieldResult = await unshieldSol(primaryClient, perRecipientAmt, dest.address, setPrivacyStatus)
                     const feeSOL = lamportsToSol(unshieldResult.fee_in_lamports || 0)
                     totalFees += feeSOL
                     lastTx = unshieldResult.tx
