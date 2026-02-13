@@ -151,26 +151,66 @@ export async function executeSwap({
     const transaction = VersionedTransaction.deserialize(txBuf)
     transaction.sign([keypair])
 
-    // 4. Send and confirm
+    // 4. Send transaction (with retries)
     onStatus?.('Submitting swap to Solana...')
     const rawTx = transaction.serialize()
     const txSignature = await connection.sendRawTransaction(rawTx, {
         skipPreflight: true,
-        maxRetries: 3,
+        maxRetries: 5,
     })
 
+    // 5. Poll for confirmation using HTTP (no WebSocket needed)
+    //    confirmTransaction() uses WebSocket internally, which fails through
+    //    Vercel's serverless proxy. Instead we poll with getSignatureStatuses.
     onStatus?.('Confirming swap transaction...')
-    const confirmation = await connection.confirmTransaction(
-        {
-            signature: txSignature,
-            blockhash: transaction.message.recentBlockhash,
-            lastValidBlockHeight: lastValidBlockHeight || (await connection.getLatestBlockhash()).lastValidBlockHeight,
-        },
-        'confirmed',
-    )
+    const maxPolls = 60          // ~60 seconds max
+    const pollIntervalMs = 1000
+    let confirmed = false
 
-    if (confirmation.value?.err) {
-        throw new Error(`Swap transaction failed: ${JSON.stringify(confirmation.value.err)}`)
+    for (let i = 0; i < maxPolls; i++) {
+        await new Promise(r => setTimeout(r, pollIntervalMs))
+
+        try {
+            const { value } = await connection.getSignatureStatuses([txSignature])
+            const status = value?.[0]
+
+            if (status) {
+                if (status.err) {
+                    throw new Error(`Swap transaction failed on-chain: ${JSON.stringify(status.err)}`)
+                }
+                if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+                    confirmed = true
+                    break
+                }
+            }
+
+            // Also check if blockhash has expired
+            if (lastValidBlockHeight) {
+                const currentHeight = await connection.getBlockHeight('confirmed')
+                if (currentHeight > lastValidBlockHeight) {
+                    throw new Error('Swap transaction expired (block height exceeded). Please try again.')
+                }
+            }
+        } catch (pollErr) {
+            // If it's our own error (not a network glitch), re-throw
+            if (pollErr.message.includes('failed on-chain') || pollErr.message.includes('expired')) {
+                throw pollErr
+            }
+            // Otherwise keep polling (transient RPC error)
+            console.warn('Confirmation poll error (retrying):', pollErr.message)
+        }
+
+        if (i % 5 === 4) {
+            onStatus?.(`Still confirming... (${i + 1}s)`)
+            // Re-send the transaction in case it was dropped
+            try {
+                await connection.sendRawTransaction(rawTx, { skipPreflight: true, maxRetries: 2 })
+            } catch (_) { /* ignore re-send errors */ }
+        }
+    }
+
+    if (!confirmed) {
+        throw new Error('Swap transaction confirmation timed out. Check Solscan for tx: ' + txSignature)
     }
 
     onStatus?.('Swap complete!')

@@ -1102,7 +1102,11 @@ export default function DashboardPage() {
                                 const { Keypair } = await import('@solana/web3.js')
                                 const destKeypair = Keypair.fromSecretKey(new Uint8Array(destWallet.secretKey))
                                 const { Connection } = await import('@solana/web3.js')
-                                const destConnection = new Connection(rpcUrl, 'confirmed')
+                                const destConnection = new Connection(rpcUrl, {
+                                    commitment: 'confirmed',
+                                    wsEndpoint: undefined,       // disable WebSocket — Vercel doesn't support it
+                                    disableRetryOnRateLimit: false,
+                                })
 
                                 // Calculate SOL amount received (after relayer fee) in lamports
                                 const receivedLamports = (perRecipientSol - feeSOL) * 1e9

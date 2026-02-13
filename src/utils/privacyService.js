@@ -58,7 +58,12 @@ const browserStorage = {
  */
 export function initPrivacyCash(rpcUrl, secretKeyBytes) {
     const keypair = Keypair.fromSecretKey(new Uint8Array(secretKeyBytes))
-    const connection = new Connection(rpcUrl, 'confirmed')
+    // Disable WebSocket when going through Vercel's serverless RPC proxy
+    // (Vercel doesn't support WS — we rely on HTTP polling for confirmations)
+    const isProxied = rpcUrl.includes('/api/rpc')
+    const connection = isProxied
+        ? new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: undefined })
+        : new Connection(rpcUrl, 'confirmed')
     const encryptionService = new EncryptionService()
     encryptionService.deriveEncryptionKeyFromWallet(keypair)
 
