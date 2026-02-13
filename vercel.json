@@ -1,6 +1,10 @@
 {
     "rewrites": [
         {
+            "source": "/api/jupiter/(.*)",
+            "destination": "/api/jupiter"
+        },
+        {
             "source": "/api/(.*)",
             "destination": "/api/$1"
         },
