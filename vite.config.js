@@ -17,4 +17,19 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['@lightprotocol/hasher.rs'],
   },
+  server: {
+    proxy: {
+      '/jupiter-api': {
+        target: 'https://api.jup.ag',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/jupiter-api/, ''),
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            const apiKey = process.env.VITE_JUPITER_API_KEY
+            if (apiKey) proxyReq.setHeader('x-api-key', apiKey)
+          })
+        },
+      },
+    },
+  },
 })

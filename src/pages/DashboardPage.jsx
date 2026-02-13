@@ -13,6 +13,7 @@ import {
     sendSol,
 } from '../utils/walletService.js'
 import { initPrivacyCash, shieldSol, unshieldSol, shieldSPL, unshieldSPL, getPrivateBalance, lamportsToSol, PRIVACY_STATUS, SUPPORTED_TOKENS } from '../utils/privacyService.js'
+import { getSwapQuote as getJupiterQuote, executeSwap as executeJupiterSwap, JUPITER_TOKEN_MINTS, TOKEN_DECIMALS, toHumanAmount, toRawAmount } from '../utils/jupiterService.js'
 import { saveSwap, updateSwap, getSwapHistory, exportSwapHistory } from '../utils/swapHistory.js'
 import {
     Wallet,
@@ -948,15 +949,33 @@ export default function DashboardPage() {
                 return
             }
 
-            // Calculate output amount with real price conversion
+            // For cross-token swaps, get a real Jupiter quote
             let amountOut = solAfterFees
-            if (effectiveToken !== 'sol' && tokenPrices) {
-                const solCGId = COINGECKO_TOKEN_MAP.sol
-                const targetCGId = COINGECKO_TOKEN_MAP[effectiveToken]
-                const solUSD = tokenPrices[solCGId]?.usd
-                const targetUSD = tokenPrices[targetCGId]?.usd
-                if (solUSD && targetUSD && targetUSD > 0) {
-                    amountOut = (solAfterFees * solUSD) / targetUSD
+            let jupiterQuote = null
+            const needsDexSwap = effectiveToken !== 'sol'
+
+            if (needsDexSwap) {
+                try {
+                    const solLamports = Math.floor(solAfterFees * 1e9)
+                    const inputMint = JUPITER_TOKEN_MINTS.sol
+                    const outputMint = JUPITER_TOKEN_MINTS[effectiveToken]
+                    if (!outputMint) throw new Error(`Unsupported token: ${effectiveToken}`)
+
+                    jupiterQuote = await getJupiterQuote(inputMint, outputMint, solLamports, 100)
+                    const decimals = TOKEN_DECIMALS[effectiveToken] || 6
+                    amountOut = Number(jupiterQuote.outAmount) / Math.pow(10, decimals)
+                } catch (jupErr) {
+                    console.warn('Jupiter quote failed, falling back to price estimate:', jupErr.message)
+                    // Fallback to CoinGecko price estimate
+                    if (tokenPrices) {
+                        const solCGId = COINGECKO_TOKEN_MAP.sol
+                        const targetCGId = COINGECKO_TOKEN_MAP[effectiveToken]
+                        const solUSD = tokenPrices[solCGId]?.usd
+                        const targetUSD = tokenPrices[targetCGId]?.usd
+                        if (solUSD && targetUSD && targetUSD > 0) {
+                            amountOut = (solAfterFees * solUSD) / targetUSD
+                        }
+                    }
                 }
             }
 
@@ -970,6 +989,9 @@ export default function DashboardPage() {
                 perRecipientAmount: perRecipient,
                 token: effectiveToken,
                 tokenSymbol: effectiveSymbol,
+                jupiterQuote,          // store for execution
+                needsDexSwap,
+                priceImpact: jupiterQuote?.priceImpactPct || null,
             })
             setSwapStep('confirming')
         } catch (err) {
@@ -1034,7 +1056,12 @@ export default function DashboardPage() {
 
             // ── UNSHIELD PHASE: withdraw to each destination ──
             setSwapStep('unshielding')
-            const perRecipientAmt = quoteData.perRecipientAmount || parseFloat((amt / destinations.length).toFixed(6))
+            // For cross-token: unshield SOL, then Jupiter swap to target token
+            // perRecipientAmt is in SOL for the unshield step
+            const needsDexSwap = quoteData.needsDexSwap && !isQuickTransfer
+            const perRecipientSol = needsDexSwap
+                ? parseFloat(((amt - quoteData.estimatedFee) / destinations.length).toFixed(6))
+                : (quoteData.perRecipientAmount || parseFloat((amt / destinations.length).toFixed(6)))
 
             // Use the first source wallet's client for unshielding (funds are in the shared pool)
             const primarySrc = fullWalletsRef.current.find(w => w.id === sourceWallets[0]?.id)
@@ -1046,31 +1073,95 @@ export default function DashboardPage() {
             for (let j = 0; j < destinations.length; j++) {
                 const dest = destinations[j]
                 setMultiTransferProgress(prev => ({ ...prev, unshieldIndex: j }))
-                setActiveSwap(prev => ({ ...prev, statusLabel: `Unshielding ${effectiveSymbol} to ${dest.name} (${j + 1}/${destinations.length})...` }))
+                setActiveSwap(prev => ({ ...prev, statusLabel: `Unshielding SOL to ${dest.name} (${j + 1}/${destinations.length})...` }))
 
                 try {
-                    let unshieldResult
-                    // Always unshield as SOL — privacy pool is per-token, we shielded SOL
-                    // Cross-token swap (e.g. SOL→USDC) would need a separate DEX step after unshielding
-                    unshieldResult = await unshieldSol(primaryClient, perRecipientAmt, dest.address, setPrivacyStatus)
+                    // Always unshield as SOL — privacy pool is SOL-denominated
+                    const unshieldResult = await unshieldSol(primaryClient, perRecipientSol, dest.address, setPrivacyStatus)
                     const feeSOL = lamportsToSol(unshieldResult.fee_in_lamports || 0)
                     totalFees += feeSOL
                     lastTx = unshieldResult.tx
 
                     setMultiTransferProgress(prev => ({
                         ...prev,
-                        completedUnshields: [...prev.completedUnshields, { address: dest.address, name: dest.name, tx: unshieldResult.tx, amount: perRecipientAmt, fee: feeSOL }],
+                        completedUnshields: [...prev.completedUnshields, { address: dest.address, name: dest.name, tx: unshieldResult.tx, amount: perRecipientSol, fee: feeSOL }],
                     }))
 
-                    // Save to swap history per unshield
+                    // ── JUPITER SWAP PHASE (cross-token only) ──
+                    if (needsDexSwap) {
+                        setSwapStep('swapping')
+                        setMultiTransferProgress(prev => ({ ...prev, swapIndex: j }))
+                        setActiveSwap(prev => ({ ...prev, statusLabel: `Swapping SOL → ${effectiveSymbol} on ${dest.name} (${j + 1}/${destinations.length})...` }))
+
+                        // Find the destination wallet's keypair for signing the Jupiter tx
+                        const destWallet = fullWalletsRef.current.find(w => w.address === dest.address)
+                        if (!destWallet?.secretKey) {
+                            console.warn(`No private key for ${dest.name} — skipping Jupiter swap (SOL delivered instead)`)
+                        } else {
+                            try {
+                                const { Keypair } = await import('@solana/web3.js')
+                                const destKeypair = Keypair.fromSecretKey(new Uint8Array(destWallet.secretKey))
+                                const { Connection } = await import('@solana/web3.js')
+                                const destConnection = new Connection(rpcUrl, 'confirmed')
+
+                                // Calculate SOL amount received (after relayer fee) in lamports
+                                const receivedLamports = (perRecipientSol - feeSOL) * 1e9
+                                // Reserve some SOL for the swap tx fee
+                                const swapLamports = Math.max(0, Math.floor(receivedLamports - 5_000_000)) // reserve 0.005 SOL for gas
+
+                                if (swapLamports > 0) {
+                                    const swapResult = await executeJupiterSwap({
+                                        keypair: destKeypair,
+                                        connection: destConnection,
+                                        inputMint: JUPITER_TOKEN_MINTS.sol,
+                                        outputMint: JUPITER_TOKEN_MINTS[selectedToken],
+                                        amount: swapLamports,
+                                        slippageBps: 150,
+                                        onStatus: (status) => setActiveSwap(prev => ({ ...prev, statusLabel: `${dest.name}: ${status}` })),
+                                    })
+
+                                    lastTx = swapResult.txSignature
+
+                                    // Update the completed entry with swap info
+                                    setMultiTransferProgress(prev => {
+                                        const updated = [...prev.completedUnshields]
+                                        const lastIdx = updated.length - 1
+                                        if (lastIdx >= 0) {
+                                            updated[lastIdx] = {
+                                                ...updated[lastIdx],
+                                                swapTx: swapResult.txSignature,
+                                                outputAmount: toHumanAmount(swapResult.outputAmount, selectedToken),
+                                                outputToken: effectiveSymbol,
+                                            }
+                                        }
+                                        return { ...prev, completedUnshields: updated }
+                                    })
+                                }
+                            } catch (swapErr) {
+                                console.error(`Jupiter swap failed for ${dest.name}:`, swapErr)
+                                // SOL was still delivered — just not swapped
+                                setMultiTransferProgress(prev => {
+                                    const updated = [...prev.completedUnshields]
+                                    const lastIdx = updated.length - 1
+                                    if (lastIdx >= 0) {
+                                        updated[lastIdx] = { ...updated[lastIdx], swapError: swapErr.message }
+                                    }
+                                    return { ...prev, completedUnshields: updated }
+                                })
+                            }
+                        }
+                    }
+
+                    // Save to swap history per destination
                     await saveSwap(passphrase, {
-                        txId: unshieldResult.tx,
-                        type: 'private_transfer',
+                        txId: lastTx || unshieldResult.tx,
+                        type: needsDexSwap ? 'private_swap' : 'private_transfer',
                         sourceWallet: { name: primarySrc.name, address: primarySrc.address },
                         destAddress: dest.address,
                         destName: dest.name,
-                        amountSOL: perRecipientAmt,
+                        amountSOL: perRecipientSol,
                         feeSOL,
+                        tokenSymbol: effectiveSymbol,
                         statusLabel: 'Complete',
                     })
                 } catch (err) {
@@ -1088,7 +1179,7 @@ export default function DashboardPage() {
                 txId: lastTx,
                 statusLabel: 'Complete',
                 feeSOL: totalFees,
-                receivedSOL: perRecipientAmt * destinations.length,
+                receivedSOL: perRecipientSol * destinations.length,
             }))
             setSwapStep('done')
 
@@ -2122,9 +2213,17 @@ export default function DashboardPage() {
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                                 <span style={{ fontSize: '10px', color: t.textMuted }}>Method</span>
                                                 <span style={{ fontSize: '11px', color: t.accent, fontWeight: 600 }}>
-                                                    ZK Privacy (on-chain)
+                                                    ZK Privacy{quoteData.needsDexSwap ? ' + Jupiter DEX' : ''} (on-chain)
                                                 </span>
                                             </div>
+                                            {quoteData.priceImpact && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <span style={{ fontSize: '10px', color: t.textMuted }}>Price Impact</span>
+                                                    <span style={{ fontSize: '11px', color: parseFloat(quoteData.priceImpact) > 1 ? '#DC3545' : t.textSec, fontFamily: "'JetBrains Mono', monospace" }}>
+                                                        {parseFloat(quoteData.priceImpact).toFixed(4)}%
+                                                    </span>
+                                                </div>
+                                            )}
                                         </div>
                                     )}
 
@@ -2197,20 +2296,41 @@ export default function DashboardPage() {
                                             index: i,
                                         }))
                                         const destinations = getDestinationAddresses()
-                                        const unshieldSteps = destinations.map((d, i) => ({
-                                            label: destinations.length > 1 ? `Unshield → ${d.name} (${i + 1}/${destinations.length})` : `Unshielding to ${d.name}`,
-                                            key: `unshield-${i}`,
-                                            phase: 'unshield',
-                                            index: i,
-                                        }))
-                                        const steps = [...shieldSteps, ...unshieldSteps, { label: 'Complete', key: 'complete', phase: 'done', index: -1 }]
+                                        // For cross-token: add swap steps after each unshield
+                                        const needsDexSwap = quoteData?.needsDexSwap && activeNav !== 'Wallet Management'
+                                        const unshieldAndSwapSteps = []
+                                        destinations.forEach((d, i) => {
+                                            unshieldAndSwapSteps.push({
+                                                label: destinations.length > 1 ? `Unshield → ${d.name} (${i + 1}/${destinations.length})` : `Unshielding to ${d.name}`,
+                                                key: `unshield-${i}`,
+                                                phase: 'unshield',
+                                                index: i,
+                                            })
+                                            if (needsDexSwap) {
+                                                const outToken = quoteData?.tokenSymbol || tokenSymbol
+                                                unshieldAndSwapSteps.push({
+                                                    label: destinations.length > 1 ? `Swap SOL → ${outToken} on ${d.name}` : `Swapping SOL → ${outToken}`,
+                                                    key: `swap-${i}`,
+                                                    phase: 'swap',
+                                                    index: i,
+                                                })
+                                            }
+                                        })
+                                        const steps = [...shieldSteps, ...unshieldAndSwapSteps, { label: 'Complete', key: 'complete', phase: 'done', index: -1 }]
 
                                         // Determine active step index
                                         let activeIdx = 0
                                         if (swapStep === 'shielding') {
                                             activeIdx = Math.max(0, mtp.shieldIndex)
                                         } else if (swapStep === 'unshielding') {
-                                            activeIdx = shieldSteps.length + Math.max(0, mtp.unshieldIndex)
+                                            // Find the unshield step for the current index
+                                            activeIdx = steps.findIndex(s => s.phase === 'unshield' && s.index === Math.max(0, mtp.unshieldIndex))
+                                            if (activeIdx === -1) activeIdx = shieldSteps.length + Math.max(0, mtp.unshieldIndex)
+                                        } else if (swapStep === 'swapping') {
+                                            // Find the swap step for the current index
+                                            const swapIdx = mtp.swapIndex ?? mtp.unshieldIndex ?? 0
+                                            activeIdx = steps.findIndex(s => s.phase === 'swap' && s.index === swapIdx)
+                                            if (activeIdx === -1) activeIdx = shieldSteps.length + Math.max(0, swapIdx)
                                         } else if (swapStep === 'done') {
                                             activeIdx = steps.length - 1
                                         }
