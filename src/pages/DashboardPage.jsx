@@ -209,13 +209,17 @@ export default function DashboardPage() {
     const [privacyStatus, setPrivacyStatus] = useState(PRIVACY_STATUS.IDLE)  // detailed sub-step
     const swapPollRef = useRef(null)
     const [multiTransferProgress, setMultiTransferProgress] = useState({ shieldIndex: -1, unshieldIndex: -1, shieldTotal: 0, unshieldTotal: 0, completedUnshields: [] })
-    const [selectedToken, setSelectedToken] = useState('sol')  // sol | usdc | usdt | zec | ore | store
+    const [sendToken, setSendToken] = useState('sol')        // FROM token: sol | usdc | usdt | zec | ore | store
+    const [selectedToken, setSelectedToken] = useState('sol')  // TO token: sol | usdc | usdt | zec | ore | store
     const [recovering, setRecovering] = useState(false)  // recovery in progress
     const [recoveryStatus, setRecoveryStatus] = useState('')  // status message for recovery
     const [shieldedBalance, setShieldedBalance] = useState(null)  // cached pool balance in lamports
     const tokenInfo = SUPPORTED_TOKENS.find(t => t.name === selectedToken) || SUPPORTED_TOKENS[0]
+    const sendTokenInfo = SUPPORTED_TOKENS.find(t => t.name === sendToken) || SUPPORTED_TOKENS[0]
     const tokenSymbol = selectedToken.toUpperCase()
+    const sendTokenSymbol = sendToken.toUpperCase()
     const isSPL = selectedToken !== 'sol'
+    const isSendSPL = sendToken !== 'sol'
 
     // ── SOL price state ──
     const [solPrice, setSolPrice] = useState(null)
@@ -914,13 +918,15 @@ export default function DashboardPage() {
 
         // Quick Private Transfer (Wallet Management) is always SOL-only
         const isQuickTransfer = activeNav === 'Wallet Management'
-        const effectiveToken = isQuickTransfer ? 'sol' : selectedToken
-        const effectiveSymbol = isQuickTransfer ? 'SOL' : tokenSymbol
-        const effectiveIsSPL = isQuickTransfer ? false : isSPL
+        const effectiveSendToken = isQuickTransfer ? 'sol' : sendToken
+        const effectiveReceiveToken = isQuickTransfer ? 'sol' : selectedToken
+        const effectiveSendSymbol = isQuickTransfer ? 'SOL' : sendTokenSymbol
+        const effectiveReceiveSymbol = isQuickTransfer ? 'SOL' : tokenSymbol
+        const effectiveIsSendSPL = isQuickTransfer ? false : isSendSPL
 
         // Check that the source wallets have enough balance
-        if (effectiveIsSPL) {
-            // For SPL tokens, we check SOL balance for gas only
+        if (effectiveIsSendSPL) {
+            // For SPL sends, we check SOL balance for gas only
             const sourceSOL = sourceWallets.reduce((s, w) => s + (w.balance || 0), 0)
             if (sourceSOL < 0.005 * sourceWallets.length) {
                 setQuoteError(`Need at least ${(0.005 * sourceWallets.length).toFixed(3)} SOL for gas fees`)
@@ -949,31 +955,35 @@ export default function DashboardPage() {
                 return
             }
 
-            // For cross-token swaps, get a real Jupiter quote
+            // For cross-token swaps (send token ≠ receive token), get a Jupiter quote
             let amountOut = solAfterFees
             let jupiterQuote = null
-            const needsDexSwap = effectiveToken !== 'sol'
+            const needsDexSwap = effectiveSendToken !== effectiveReceiveToken
 
             if (needsDexSwap) {
                 try {
-                    const solLamports = Math.floor(solAfterFees * 1e9)
-                    const inputMint = JUPITER_TOKEN_MINTS.sol
-                    const outputMint = JUPITER_TOKEN_MINTS[effectiveToken]
-                    if (!outputMint) throw new Error(`Unsupported token: ${effectiveToken}`)
+                    const inputMint = JUPITER_TOKEN_MINTS[effectiveSendToken]
+                    const outputMint = JUPITER_TOKEN_MINTS[effectiveReceiveToken]
+                    if (!inputMint) throw new Error(`Unsupported send token: ${effectiveSendToken}`)
+                    if (!outputMint) throw new Error(`Unsupported receive token: ${effectiveReceiveToken}`)
 
-                    jupiterQuote = await getJupiterQuote(inputMint, outputMint, solLamports, 100)
-                    const decimals = TOKEN_DECIMALS[effectiveToken] || 6
-                    amountOut = Number(jupiterQuote.outAmount) / Math.pow(10, decimals)
+                    // Convert amount to smallest units for the send token
+                    const sendDecimals = TOKEN_DECIMALS[effectiveSendToken] || 9
+                    const inputSmallestUnits = Math.floor(solAfterFees * Math.pow(10, sendDecimals))
+
+                    jupiterQuote = await getJupiterQuote(inputMint, outputMint, inputSmallestUnits, 100)
+                    const receiveDecimals = TOKEN_DECIMALS[effectiveReceiveToken] || 6
+                    amountOut = Number(jupiterQuote.outAmount) / Math.pow(10, receiveDecimals)
                 } catch (jupErr) {
                     console.warn('Jupiter quote failed, falling back to price estimate:', jupErr.message)
                     // Fallback to CoinGecko price estimate
                     if (tokenPrices) {
-                        const solCGId = COINGECKO_TOKEN_MAP.sol
-                        const targetCGId = COINGECKO_TOKEN_MAP[effectiveToken]
-                        const solUSD = tokenPrices[solCGId]?.usd
+                        const sendCGId = COINGECKO_TOKEN_MAP[effectiveSendToken]
+                        const targetCGId = COINGECKO_TOKEN_MAP[effectiveReceiveToken]
+                        const sendUSD = tokenPrices[sendCGId]?.usd
                         const targetUSD = tokenPrices[targetCGId]?.usd
-                        if (solUSD && targetUSD && targetUSD > 0) {
-                            amountOut = (solAfterFees * solUSD) / targetUSD
+                        if (sendUSD && targetUSD && targetUSD > 0) {
+                            amountOut = (solAfterFees * sendUSD) / targetUSD
                         }
                     }
                 }
@@ -987,8 +997,10 @@ export default function DashboardPage() {
                 recipients: destinations.length,
                 sources: sourceWallets.length,
                 perRecipientAmount: perRecipient,
-                token: effectiveToken,
-                tokenSymbol: effectiveSymbol,
+                sendToken: effectiveSendToken,
+                sendTokenSymbol: effectiveSendSymbol,
+                token: effectiveReceiveToken,
+                tokenSymbol: effectiveReceiveSymbol,
                 jupiterQuote,          // store for execution
                 needsDexSwap,
                 priceImpact: jupiterQuote?.priceImpactPct || null,
@@ -1008,8 +1020,12 @@ export default function DashboardPage() {
 
         // Quick Private Transfer (Wallet Management) is always SOL-only
         const isQuickTransfer = activeNav === 'Wallet Management'
-        const effectiveIsSPL = isQuickTransfer ? false : isSPL
-        const effectiveSymbol = isQuickTransfer ? 'SOL' : tokenSymbol
+        // Use tokens from the stored quoteData for consistency
+        const effectiveSendToken = quoteData.sendToken || 'sol'
+        const effectiveReceiveToken = quoteData.token || 'sol'
+        const effectiveSendSymbol = quoteData.sendTokenSymbol || 'SOL'
+        const effectiveReceiveSymbol = quoteData.tokenSymbol || 'SOL'
+        const effectiveIsSendSPL = effectiveSendToken !== 'sol'
 
         setSwapStep('shielding')
         setSwapError('')
@@ -1023,7 +1039,7 @@ export default function DashboardPage() {
         const perSourceAmount = parseFloat((amt / sourceCount).toFixed(6))
 
         setMultiTransferProgress({ shieldIndex: 0, unshieldIndex: -1, shieldTotal: sourceCount, unshieldTotal: destinations.length, completedUnshields: [] })
-        setActiveSwap({ statusLabel: `Shielding ${effectiveSymbol} from wallet 1/${sourceCount}...`, amountSOL: amt, tokenSymbol: effectiveSymbol })
+        setActiveSwap({ statusLabel: `Shielding ${effectiveSendSymbol} from wallet 1/${sourceCount}...`, amountSOL: amt, tokenSymbol: effectiveReceiveSymbol })
 
         try {
             // ── SHIELD PHASE: deposit from each source wallet ──
@@ -1044,11 +1060,12 @@ export default function DashboardPage() {
                 }
 
                 setMultiTransferProgress(prev => ({ ...prev, shieldIndex: i }))
-                setActiveSwap(prev => ({ ...prev, statusLabel: `Shielding ${effectiveSymbol} from ${srcWallet.name} (${i + 1}/${sourceCount})...` }))
+                setActiveSwap(prev => ({ ...prev, statusLabel: `Shielding ${effectiveSendSymbol} from ${srcWallet.name} (${i + 1}/${sourceCount})...` }))
 
-                if (effectiveIsSPL) {
-                    // Always shield SOL (user sends SOL) — SPL conversion happens at unshield
-                    await shieldSol(client, shieldAmt, setPrivacyStatus)
+                if (effectiveIsSendSPL) {
+                    // Shield SPL token (USDC, USDT, etc.)
+                    const mintAddress = JUPITER_TOKEN_MINTS[effectiveSendToken]
+                    await shieldSPL(client, mintAddress, shieldAmt, setPrivacyStatus)
                 } else {
                     await shieldSol(client, shieldAmt, setPrivacyStatus)
                 }
@@ -1056,10 +1073,9 @@ export default function DashboardPage() {
 
             // ── UNSHIELD PHASE: withdraw to each destination ──
             setSwapStep('unshielding')
-            // For cross-token: unshield SOL, then Jupiter swap to target token
-            // perRecipientAmt is in SOL for the unshield step
+            // For cross-token: unshield the SEND token, then Jupiter swap to RECEIVE token
             const needsDexSwap = quoteData.needsDexSwap && !isQuickTransfer
-            const perRecipientSol = needsDexSwap
+            const perRecipientAmt = needsDexSwap
                 ? parseFloat(((amt - quoteData.estimatedFee) / destinations.length).toFixed(6))
                 : (quoteData.perRecipientAmount || parseFloat((amt / destinations.length).toFixed(6)))
 
@@ -1073,30 +1089,38 @@ export default function DashboardPage() {
             for (let j = 0; j < destinations.length; j++) {
                 const dest = destinations[j]
                 setMultiTransferProgress(prev => ({ ...prev, unshieldIndex: j }))
-                setActiveSwap(prev => ({ ...prev, statusLabel: `Unshielding SOL to ${dest.name} (${j + 1}/${destinations.length})...` }))
+                setActiveSwap(prev => ({ ...prev, statusLabel: `Unshielding ${effectiveSendSymbol} to ${dest.name} (${j + 1}/${destinations.length})...` }))
 
                 try {
-                    // Always unshield as SOL — privacy pool is SOL-denominated
-                    const unshieldResult = await unshieldSol(primaryClient, perRecipientSol, dest.address, setPrivacyStatus)
-                    const feeSOL = lamportsToSol(unshieldResult.fee_in_lamports || 0)
-                    totalFees += feeSOL
+                    let unshieldResult
+                    if (effectiveIsSendSPL) {
+                        // Unshield SPL token (USDC, USDT, etc.)
+                        const mintAddress = JUPITER_TOKEN_MINTS[effectiveSendToken]
+                        unshieldResult = await unshieldSPL(primaryClient, mintAddress, perRecipientAmt, dest.address, setPrivacyStatus)
+                    } else {
+                        unshieldResult = await unshieldSol(primaryClient, perRecipientAmt, dest.address, setPrivacyStatus)
+                    }
+                    const feeAmount = effectiveIsSendSPL
+                        ? (unshieldResult.fee_base_units ? Number(unshieldResult.fee_base_units) / Math.pow(10, TOKEN_DECIMALS[effectiveSendToken] || 6) : 0)
+                        : lamportsToSol(unshieldResult.fee_in_lamports || 0)
+                    totalFees += feeAmount
                     lastTx = unshieldResult.tx
 
                     setMultiTransferProgress(prev => ({
                         ...prev,
-                        completedUnshields: [...prev.completedUnshields, { address: dest.address, name: dest.name, tx: unshieldResult.tx, amount: perRecipientSol, fee: feeSOL }],
+                        completedUnshields: [...prev.completedUnshields, { address: dest.address, name: dest.name, tx: unshieldResult.tx, amount: perRecipientAmt, fee: feeAmount }],
                     }))
 
                     // ── JUPITER SWAP PHASE (cross-token only) ──
                     if (needsDexSwap) {
                         setSwapStep('swapping')
                         setMultiTransferProgress(prev => ({ ...prev, swapIndex: j }))
-                        setActiveSwap(prev => ({ ...prev, statusLabel: `Swapping SOL → ${effectiveSymbol} on ${dest.name} (${j + 1}/${destinations.length})...` }))
+                        setActiveSwap(prev => ({ ...prev, statusLabel: `Swapping ${effectiveSendSymbol} → ${effectiveReceiveSymbol} on ${dest.name} (${j + 1}/${destinations.length})...` }))
 
                         // Find the destination wallet's keypair for signing the Jupiter tx
                         const destWallet = fullWalletsRef.current.find(w => w.address === dest.address)
                         if (!destWallet?.secretKey) {
-                            console.warn(`No private key for ${dest.name} — skipping Jupiter swap (SOL delivered instead)`)
+                            console.warn(`No private key for ${dest.name} — skipping Jupiter swap (${effectiveSendSymbol} delivered instead)`)
                         } else {
                             try {
                                 const { Keypair } = await import('@solana/web3.js')
@@ -1108,18 +1132,22 @@ export default function DashboardPage() {
                                     disableRetryOnRateLimit: false,
                                 })
 
-                                // Calculate SOL amount received (after relayer fee) in lamports
-                                const receivedLamports = (perRecipientSol - feeSOL) * 1e9
-                                // Reserve some SOL for the swap tx fee
-                                const swapLamports = Math.max(0, Math.floor(receivedLamports - 5_000_000)) // reserve 0.005 SOL for gas
+                                // Calculate amount received in smallest units for the send token
+                                const sendDecimals = TOKEN_DECIMALS[effectiveSendToken] || 9
+                                const receivedSmallest = (perRecipientAmt - feeAmount) * Math.pow(10, sendDecimals)
+                                // Reserve some SOL for the swap tx fee (need SOL regardless of send token)
+                                // For SPL sends, the full unshielded amount goes to swap; SOL gas is separate
+                                const swapSmallest = effectiveIsSendSPL
+                                    ? Math.max(0, Math.floor(receivedSmallest))
+                                    : Math.max(0, Math.floor(receivedSmallest - 5_000_000)) // reserve 0.005 SOL for gas
 
-                                if (swapLamports > 0) {
+                                if (swapSmallest > 0) {
                                     const swapResult = await executeJupiterSwap({
                                         keypair: destKeypair,
                                         connection: destConnection,
-                                        inputMint: JUPITER_TOKEN_MINTS.sol,
-                                        outputMint: JUPITER_TOKEN_MINTS[selectedToken],
-                                        amount: swapLamports,
+                                        inputMint: JUPITER_TOKEN_MINTS[effectiveSendToken],
+                                        outputMint: JUPITER_TOKEN_MINTS[effectiveReceiveToken],
+                                        amount: swapSmallest,
                                         slippageBps: 150,
                                         onStatus: (status) => setActiveSwap(prev => ({ ...prev, statusLabel: `${dest.name}: ${status}` })),
                                     })
@@ -1134,8 +1162,8 @@ export default function DashboardPage() {
                                             updated[lastIdx] = {
                                                 ...updated[lastIdx],
                                                 swapTx: swapResult.txSignature,
-                                                outputAmount: toHumanAmount(swapResult.outputAmount, selectedToken),
-                                                outputToken: effectiveSymbol,
+                                                outputAmount: toHumanAmount(swapResult.outputAmount, effectiveReceiveToken),
+                                                outputToken: effectiveReceiveSymbol,
                                             }
                                         }
                                         return { ...prev, completedUnshields: updated }
@@ -1163,9 +1191,10 @@ export default function DashboardPage() {
                         sourceWallet: { name: primarySrc.name, address: primarySrc.address },
                         destAddress: dest.address,
                         destName: dest.name,
-                        amountSOL: perRecipientSol,
-                        feeSOL,
-                        tokenSymbol: effectiveSymbol,
+                        amountSOL: perRecipientAmt,
+                        feeSOL: feeAmount,
+                        sendTokenSymbol: effectiveSendSymbol,
+                        tokenSymbol: effectiveReceiveSymbol,
                         statusLabel: 'Complete',
                     })
                 } catch (err) {
@@ -1183,7 +1212,7 @@ export default function DashboardPage() {
                 txId: lastTx,
                 statusLabel: 'Complete',
                 feeSOL: totalFees,
-                receivedSOL: perRecipientSol * destinations.length,
+                receivedSOL: perRecipientAmt * destinations.length,
             }))
             setSwapStep('done')
 
@@ -2182,7 +2211,7 @@ export default function DashboardPage() {
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                                 <span style={{ fontSize: '11px', color: t.textDim }}>You Send</span>
                                                 <span style={{ fontSize: '13px', fontWeight: 700, color: t.text, fontFamily: "'JetBrains Mono', monospace" }}>
-                                                    {quoteData.amountIn} {quoteData.tokenSymbol || 'SOL'}
+                                                    {quoteData.amountIn} {quoteData.sendTokenSymbol || quoteData.tokenSymbol || 'SOL'}
                                                 </span>
                                             </div>
                                             {(quoteData.sources > 1) && (
@@ -2211,7 +2240,7 @@ export default function DashboardPage() {
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                                 <span style={{ fontSize: '10px', color: t.textMuted }}>Relayer Fee (est.)</span>
                                                 <span style={{ fontSize: '11px', color: t.textDim, fontFamily: "'JetBrains Mono', monospace" }}>
-                                                    ~{quoteData.estimatedFee} {quoteData.tokenSymbol || 'SOL'}
+                                                    ~{quoteData.estimatedFee} {quoteData.sendTokenSymbol || quoteData.tokenSymbol || 'SOL'}
                                                 </span>
                                             </div>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2311,9 +2340,10 @@ export default function DashboardPage() {
                                                 index: i,
                                             })
                                             if (needsDexSwap) {
-                                                const outToken = quoteData?.tokenSymbol || tokenSymbol
+                                                const fromToken = quoteData?.sendTokenSymbol || sendTokenSymbol
+                                                const toToken = quoteData?.tokenSymbol || tokenSymbol
                                                 unshieldAndSwapSteps.push({
-                                                    label: destinations.length > 1 ? `Swap SOL → ${outToken} on ${d.name}` : `Swapping SOL → ${outToken}`,
+                                                    label: destinations.length > 1 ? `Swap ${fromToken} → ${toToken} on ${d.name}` : `Swapping ${fromToken} → ${toToken}`,
                                                     key: `swap-${i}`,
                                                     phase: 'swap',
                                                     index: i,
@@ -2689,9 +2719,34 @@ export default function DashboardPage() {
                                                     </span>
                                                 )}
                                             </div>
+
+                                            {/* Send token grid — 3 col */}
+                                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', marginBottom: '10px' }}>
+                                                {SUPPORTED_TOKENS.map(tk => {
+                                                    const isActive = sendToken === tk.name
+                                                    return (
+                                                        <button key={tk.name}
+                                                            onClick={() => { setSendToken(tk.name); setQuoteData(null); setSwapStep('idle'); setQuoteError('') }}
+                                                            style={{
+                                                                display: 'flex', alignItems: 'center', gap: '6px',
+                                                                padding: '6px 8px', borderRadius: '2px',
+                                                                border: isActive ? `1px solid ${t.accent}` : `1px solid ${t.cardBorder}`,
+                                                                background: isActive ? t.accentBg : t.inputBg,
+                                                                cursor: 'pointer', transition: 'all 0.15s ease',
+                                                                boxShadow: isActive ? `inset 0 0 0 1px ${t.accent}` : 'none',
+                                                            }}
+                                                        >
+                                                            <img src={TOKEN_IMAGES[tk.name]} alt={tk.name} style={{ width: '16px', height: '16px', borderRadius: '2px', flexShrink: 0 }} />
+                                                            <span style={{ fontSize: '10px', fontWeight: isActive ? 700 : 500, fontFamily: "'JetBrains Mono', monospace", color: isActive ? t.accent : t.textMuted, letterSpacing: '0.04em' }}>
+                                                                {tk.name.toUpperCase()}
+                                                            </span>
+                                                        </button>
+                                                    )
+                                                })}
+                                            </div>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: t.inputBg, border: `1px solid ${t.cardBorder}`, borderRadius: '2px', padding: '8px 10px' }}>
-                                                <img src={TOKEN_IMAGES.sol} alt="SOL" style={{ width: '24px', height: '24px', borderRadius: '2px' }} />
-                                                <span style={{ fontSize: '12px', fontWeight: 700, color: t.text, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>SOL</span>
+                                                <img src={TOKEN_IMAGES[sendToken]} alt={sendTokenSymbol} style={{ width: '24px', height: '24px', borderRadius: '2px' }} />
+                                                <span style={{ fontSize: '12px', fontWeight: 700, color: t.text, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>{sendTokenSymbol}</span>
                                                 <input
                                                     type="number" value={swapAmount}
                                                     onChange={(e) => { setSwapAmount(e.target.value); setQuoteData(null); setSwapStep('idle'); setQuoteError('') }}
