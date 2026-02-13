@@ -975,7 +975,8 @@ export default function DashboardPage() {
                 setActiveSwap(prev => ({ ...prev, statusLabel: `Shielding ${effectiveSymbol} from ${srcWallet.name} (${i + 1}/${sourceCount})...` }))
 
                 if (effectiveIsSPL) {
-                    await shieldSPL(client, tokenInfo.pubkey.toString(), shieldAmt, setPrivacyStatus)
+                    // Always shield SOL (user sends SOL) — SPL conversion happens at unshield
+                    await shieldSol(client, shieldAmt, setPrivacyStatus)
                 } else {
                     await shieldSol(client, shieldAmt, setPrivacyStatus)
                 }
