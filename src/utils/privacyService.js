@@ -240,8 +240,9 @@ export async function shieldSPL(client, mintAddress, amount, onStatus) {
  * @returns {{ tx, recipient, base_units, fee_base_units, isPartial }}
  */
 export async function unshieldSPL(client, mintAddress, amount, recipientAddress, onStatus) {
-    // Ensure mintAddress is a PublicKey object (SDK requires it)
+    // Ensure mintAddress and recipient are PublicKey objects (SDK requires them for getAssociatedTokenAddressSync)
     const mint = typeof mintAddress === 'string' ? new PublicKey(mintAddress) : mintAddress
+    const recipient = typeof recipientAddress === 'string' ? new PublicKey(recipientAddress) : recipientAddress
 
     onStatus?.(PRIVACY_STATUS.UNSHIELDING)
 
@@ -259,7 +260,7 @@ export async function unshieldSPL(client, mintAddress, amount, recipientAddress,
             connection: client.connection,
             encryptionService: client.encryptionService,
             publicKey: client.publicKey,
-            recipient: recipientAddress,
+            recipient: recipient,
             keyBasePath: CIRCUIT_BASE_PATH,
             storage: browserStorage,
         })
