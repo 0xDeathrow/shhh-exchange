@@ -2419,273 +2419,330 @@ export default function DashboardPage() {
                                 })}
                             </div>
 
-                            {/* ── SPLIT-SCREEN LAYOUT ── */}
-                            <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
+{/* ── 3-COLUMN LAYOUT ── */ }
+<div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
 
-                                {/* ── LEFT PANEL: SOURCE ── */}
-                                <div
-                                    onDragOver={(e) => handleDragOver(e, 'source')}
-                                    onDragLeave={() => setDragOverZone(null)}
-                                    onDrop={(e) => handleDrop(e, 'source')}
-                                    style={{
-                                        flex: 1, display: 'flex', flexDirection: 'column',
-                                        borderRight: `1px solid ${t.border}`,
-                                        background: dragOverZone === 'source' ? t.dropHighlight : 'transparent',
-                                        transition: 'background 0.2s ease', overflow: 'hidden',
-                                    }}
-                                >
-                                    {/* Source header */}
-                                    <div style={{ padding: '14px 20px', borderBottom: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                        <span style={{ fontSize: '11px', fontWeight: 700, color: t.accent, letterSpacing: '0.1em', fontFamily: "'JetBrains Mono', monospace", textTransform: 'uppercase' }}>Source</span>
-                                        {sourceWallets.length > 0 && (
-                                            <span style={{ fontSize: '10px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>
-                                                BAL: {sourceWallets.reduce((s, w) => s + (w.balance || 0), 0).toFixed(4)} SOL
-                                            </span>
-                                        )}
-                                    </div>
+    {/* ── LEFT PANEL: SOURCE WALLETS ── */}
+    <div
+        onDragOver={(e) => handleDragOver(e, 'source')}
+        onDragLeave={() => setDragOverZone(null)}
+        onDrop={(e) => handleDrop(e, 'source')}
+        style={{
+            width: '240px', minWidth: '200px', display: 'flex', flexDirection: 'column',
+            borderRight: `1px solid ${t.border}`,
+            background: dragOverZone === 'source' ? t.dropHighlight : 'transparent',
+            transition: 'background 0.2s ease', overflow: 'hidden', flexShrink: 0,
+        }}
+    >
+        <div style={{ padding: '14px 16px', borderBottom: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: '11px', fontWeight: 700, color: t.accent, letterSpacing: '0.1em', fontFamily: "'JetBrains Mono', monospace", textTransform: 'uppercase' }}>Source</span>
+            {sourceWallets.length > 0 && (
+                <span style={{ fontSize: '9px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>
+                    {sourceWallets.reduce((s, w) => s + (w.balance || 0), 0).toFixed(4)} SOL
+                </span>
+            )}
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+            {sourceWallets.length === 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '32px 16px', gap: '8px', height: '100%', minHeight: '80px' }}>
+                    <ArrowDownUp size={18} style={{ color: t.textDim, opacity: 0.5 }} />
+                    <p style={{ fontSize: '10px', color: t.textMuted, margin: 0, textAlign: 'center', lineHeight: 1.5 }}>
+                        Click wallets above<br />to select as source
+                    </p>
+                </div>
+            ) : (
+                sourceWallets.map((w) => (
+                    <div key={w.id} style={{ display: 'flex', alignItems: 'center', padding: '10px 12px', borderBottom: `1px solid ${t.border}`, gap: '6px' }}>
+                        <span style={{ fontSize: '10px', fontWeight: 600, color: t.accent, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>
+                            #{wallets.findIndex(ww => ww.id === w.id) + 1}
+                        </span>
+                        <span style={{ fontSize: '11px', fontWeight: 600, color: t.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.name}</span>
+                        <span style={{ fontSize: '10px', color: t.textDim, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>{(w.balance || 0).toFixed(4)}</span>
+                        <button onClick={() => removeFromZone(w.id, 'source')} title="Remove" style={{ ...iconBtnStyle, flexShrink: 0, padding: '2px' }}><X size={12} /></button>
+                    </div>
+                ))
+            )}
+        </div>
+    </div>
 
-                                    {/* Source wallets list */}
-                                    <div style={{ flex: 1, overflowY: 'auto', padding: '0' }}>
-                                        {sourceWallets.length === 0 ? (
-                                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '32px 20px', gap: '8px', height: '100%', minHeight: '80px' }}>
-                                                <ArrowDownUp size={18} style={{ color: t.textDim, opacity: 0.5 }} />
-                                                <p style={{ fontSize: '11px', color: t.textMuted, margin: 0, textAlign: 'center', lineHeight: 1.5 }}>
-                                                    Click wallets above to<br />select as source
-                                                </p>
-                                            </div>
-                                        ) : (
-                                            sourceWallets.map((w) => (
-                                                <div key={w.id} style={{ display: 'flex', alignItems: 'center', padding: '10px 16px', borderBottom: `1px solid ${t.border}`, gap: '8px' }}>
-                                                    <span style={{ fontSize: '11px', fontWeight: 600, color: t.accent, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0, width: '20px' }}>
-                                                        #{wallets.findIndex(ww => ww.id === w.id) + 1}
-                                                    </span>
-                                                    <span style={{ fontSize: '12px', fontWeight: 600, color: t.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.name}</span>
-                                                    <span style={{ fontSize: '11px', fontWeight: 500, color: t.textDim, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>{(w.balance || 0).toFixed(4)}</span>
-                                                    <button onClick={() => removeFromZone(w.id, 'source')} title="Remove" style={{ ...iconBtnStyle, flexShrink: 0, padding: '2px' }}><X size={14} /></button>
+    {/* ── CENTER PANEL: SWAP CONTROLS ── */}
+    <div style={{
+        flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
+        overflowY: 'auto', padding: '24px 20px',
+    }}>
+        <div style={{ width: '100%', maxWidth: '380px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+
+            {/* SEND input */}
+            <div style={{
+                width: '100%',
+                background: t.cardBg, border: `1px solid ${t.border}`,
+                borderRadius: '4px', padding: '14px 16px',
+                backdropFilter: 'blur(12px)',
+            }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '9px', fontWeight: 700, color: t.textDim, letterSpacing: '0.12em', fontFamily: "'JetBrains Mono', monospace" }}>SEND</span>
+                    {sourceWallets.length > 0 && (
+                        <span style={{ fontSize: '10px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>
+                            BAL: {sourceWallets.reduce((s, w) => s + (w.balance || 0), 0).toFixed(4)} SOL
+                        </span>
+                    )}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: t.inputBg, border: `1px solid ${t.cardBorder}`, borderRadius: '2px', padding: '8px 10px' }}>
+                    <img src={TOKEN_IMAGES.sol} alt="SOL" style={{ width: '24px', height: '24px', borderRadius: '2px' }} />
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: t.text, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>SOL</span>
+                    <input
+                        type="number" value={swapAmount}
+                        onChange={(e) => { setSwapAmount(e.target.value); setQuoteData(null); setSwapStep('idle'); setQuoteError('') }}
+                        placeholder="0.00" step="0.001" min="0"
+                        style={{ flex: 1, background: 'transparent', border: 'none', color: t.text, fontSize: '18px', fontWeight: 600, fontFamily: "'JetBrains Mono', monospace", outline: 'none', textAlign: 'right' }}
+                    />
+                    {sourceWallets.length > 0 && (
+                        <button onClick={() => { const total = sourceWallets.reduce((s, w) => s + (w.balance || 0), 0); setSwapAmount(Math.max(0, total - 0.01 * sourceWallets.length).toFixed(6)); setQuoteData(null); setSwapStep('idle') }}
+                            style={{ padding: '3px 8px', fontSize: '9px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.06em', border: `1px solid ${t.accent}`, borderRadius: '2px', background: 'transparent', color: t.accent, cursor: 'pointer' }}>
+                            MAX
+                        </button>
+                    )}
+                </div>
+                {sourceWallets.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '8px' }}>
+                        {sourceWallets.map(w => (
+                            <span key={w.id} style={{ fontSize: '9px', color: t.accent, fontFamily: "'JetBrains Mono', monospace", padding: '2px 6px', background: t.accentBg, border: `1px solid ${t.accentBorder}`, borderRadius: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                {w.name}
+                                <X size={8} style={{ cursor: 'pointer', opacity: 0.7 }} onClick={() => removeFromZone(w.id, 'source')} />
+                            </span>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            {/* Token circle divider */}
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 0', position: 'relative', width: '100%' }}>
+                <div style={{
+                    width: '52px', height: '52px', borderRadius: '50%',
+                    background: t.statsBg, border: `2px solid ${t.accent}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    zIndex: 2,
+                }}>
+                    <img src={TOKEN_IMAGES[selectedToken]} alt={selectedToken} style={{ width: '28px', height: '28px', borderRadius: '50%' }} />
+                </div>
+                <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: '1px', background: t.border }} />
+            </div>
+
+            {/* RECEIVE section */}
+            <div style={{
+                width: '100%',
+                background: t.cardBg, border: `1px solid ${t.border}`,
+                borderRadius: '4px', padding: '14px 16px',
+                backdropFilter: 'blur(12px)',
+            }}>
+                <span style={{ fontSize: '9px', fontWeight: 700, color: t.textDim, letterSpacing: '0.12em', fontFamily: "'JetBrains Mono', monospace", display: 'block', marginBottom: '8px' }}>RECEIVE</span>
+
+                {/* Token grid — 3 col */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', marginBottom: '10px' }}>
+                    {SUPPORTED_TOKENS.map(tk => {
+                        const isActive = selectedToken === tk.name
+                        return (
+                            <button key={tk.name}
+                                onClick={() => { setSelectedToken(tk.name); setQuoteData(null); setSwapStep('idle'); setQuoteError('') }}
+                                style={{
+                                    display: 'flex', alignItems: 'center', gap: '6px',
+                                    padding: '6px 8px', borderRadius: '2px',
+                                    border: isActive ? `1px solid ${t.accent}` : `1px solid ${t.cardBorder}`,
+                                    background: isActive ? t.accentBg : t.inputBg,
+                                    cursor: 'pointer', transition: 'all 0.15s ease',
+                                    boxShadow: isActive ? `inset 0 0 0 1px ${t.accent}` : 'none',
+                                }}
+                            >
+                                <img src={TOKEN_IMAGES[tk.name]} alt={tk.name} style={{ width: '16px', height: '16px', borderRadius: '2px', flexShrink: 0 }} />
+                                <span style={{ fontSize: '10px', fontWeight: isActive ? 700 : 500, fontFamily: "'JetBrains Mono', monospace", color: isActive ? t.accent : t.textMuted, letterSpacing: '0.04em' }}>
+                                    {tk.name.toUpperCase()}
+                                </span>
+                            </button>
+                        )
+                    })}
+                </div>
+
+                {/* Estimated receive */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: t.inputBg, border: `1px solid ${t.cardBorder}`, borderRadius: '2px', padding: '8px 10px', marginBottom: '8px' }}>
+                    <img src={TOKEN_IMAGES[selectedToken]} alt={selectedToken} style={{ width: '24px', height: '24px', borderRadius: '2px' }} />
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: t.text, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>{tokenSymbol}</span>
+                    <span style={{ flex: 1, textAlign: 'right', fontSize: '18px', fontWeight: 600, color: quoteData ? (t.green || '#22c55e') : t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>
+                        {quoteData ? `≈ ${quoteData.amountOut}` : '—'}
+                    </span>
+                </div>
+
+                {/* Dest wallet badges */}
+                {destWallets.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
+                        {destWallets.map(w => (
+                            <span key={w.id} style={{ fontSize: '9px', color: t.green || '#22c55e', fontFamily: "'JetBrains Mono', monospace", padding: '2px 6px', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                {w.name}
+                                <X size={8} style={{ cursor: 'pointer', opacity: 0.7 }} onClick={() => removeFromZone(w.id, 'dest')} />
+                            </span>
+                        ))}
+                    </div>
+                )}
+
+                {/* Manual address input */}
+                {destWallets.length === 0 && (
+                    <input
+                        type="text" value={manualDestAddr}
+                        onChange={(e) => { setManualDestAddr(e.target.value); setQuoteData(null); setSwapStep('idle') }}
+                        placeholder="Or paste destination address..."
+                        style={{ width: '100%', background: t.inputBg, border: `1px solid ${t.cardBorder}`, borderRadius: '2px', padding: '8px 10px', color: t.text, fontSize: '11px', fontFamily: "'JetBrains Mono', monospace", outline: 'none', boxSizing: 'border-box' }}
+                    />
+                )}
+            </div>
+
+            {/* Quote preview */}
+            {quoteData && swapStep === 'confirming' && (
+                <div style={{ background: t.statsBg, border: `1px solid ${t.border}`, borderRadius: '4px', padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ fontSize: '9px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>FEE (EST.)</span>
+                        <span style={{ fontSize: '10px', color: t.textDim, fontFamily: "'JetBrains Mono', monospace" }}>~{quoteData.estimatedFee} {quoteData.tokenSymbol}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ fontSize: '9px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>METHOD</span>
+                        <span style={{ fontSize: '10px', color: t.accent, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>ZK PRIVACY</span>
+                    </div>
+                </div>
+            )}
+
+            {/* Quote error */}
+            {quoteError && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 12px', background: 'rgba(220,53,69,0.06)', border: '1px solid rgba(220,53,69,0.15)', borderRadius: '2px', color: '#DC3545', fontSize: '10px', fontFamily: "'JetBrains Mono', monospace", marginTop: '6px' }}>
+                    <AlertTriangle size={11} />
+                    {quoteError}
+                </div>
+            )}
+
+            {/* Progress tracker */}
+            {(swapStep === 'shielding' || swapStep === 'unshielding' || swapStep === 'done' || swapStep === 'error') && (
+                <div style={{ background: t.cardBg, border: `1px solid ${t.border}`, borderRadius: '4px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+                    {(() => {
+                        const steps = [
+                            { label: 'SHIELD SOL', key: 'shield-0' },
+                            { label: `UNSHIELD ${tokenSymbol}`, key: 'unshield-0' },
+                            { label: 'COMPLETE', key: 'complete' },
+                        ]
+                        let activeIdx = 0
+                        if (swapStep === 'shielding') activeIdx = 0
+                        else if (swapStep === 'unshielding') activeIdx = 1
+                        else if (swapStep === 'done') activeIdx = steps.length - 1
+                        const isFailed = swapStep === 'error'
+                        return (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+                                {steps.map((step, i) => {
+                                    const isComplete = !isFailed && i < activeIdx
+                                    const isActive = !isFailed && i === activeIdx
+                                    return (
+                                        <div key={step.key} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '16px' }}>
+                                                <div style={{
+                                                    width: isActive ? '10px' : '8px', height: isActive ? '10px' : '8px', borderRadius: '1px',
+                                                    background: (isFailed && i === activeIdx) ? '#DC3545' : isComplete ? t.green : isActive ? t.accent : t.inputBg,
+                                                    border: `1px solid ${(isFailed && i === activeIdx) ? '#DC3545' : isComplete ? t.green : isActive ? t.accent : t.cardBorder}`,
+                                                    transition: 'all 0.3s ease', animation: isActive ? 'pulse 1.5s ease-in-out infinite' : 'none',
+                                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                }}>
+                                                    {isComplete && <Check size={5} style={{ color: '#fff' }} />}
                                                 </div>
-                                            ))
-                                        )}
-                                    </div>
-
-                                    {/* SEND input — bottom of left panel */}
-                                    <div style={{ padding: '16px', borderTop: `1px solid ${t.border}`, background: t.cardBg, flexShrink: 0 }}>
-                                        <span style={{ fontSize: '9px', fontWeight: 700, color: t.textDim, letterSpacing: '0.12em', fontFamily: "'JetBrains Mono', monospace", display: 'block', marginBottom: '8px' }}>SEND</span>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: t.inputBg, border: `1px solid ${t.cardBorder}`, borderRadius: '2px', padding: '8px 10px' }}>
-                                            <img src={TOKEN_IMAGES.sol} alt="SOL" style={{ width: '24px', height: '24px', borderRadius: '2px' }} />
-                                            <span style={{ fontSize: '12px', fontWeight: 700, color: t.text, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>SOL</span>
-                                            <input
-                                                type="number" value={swapAmount}
-                                                onChange={(e) => { setSwapAmount(e.target.value); setQuoteData(null); setSwapStep('idle'); setQuoteError('') }}
-                                                placeholder="0.00" step="0.001" min="0"
-                                                style={{ flex: 1, background: 'transparent', border: 'none', color: t.text, fontSize: '18px', fontWeight: 600, fontFamily: "'JetBrains Mono', monospace", outline: 'none', textAlign: 'right' }}
-                                            />
-                                            {sourceWallets.length > 0 && (
-                                                <button onClick={() => { const total = sourceWallets.reduce((s, w) => s + (w.balance || 0), 0); setSwapAmount(Math.max(0, total - 0.01 * sourceWallets.length).toFixed(6)); setQuoteData(null); setSwapStep('idle') }}
-                                                    style={{ padding: '3px 8px', fontSize: '9px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.06em', border: `1px solid ${t.accent}`, borderRadius: '2px', background: 'transparent', color: t.accent, cursor: 'pointer' }}>
-                                                    MAX
-                                                </button>
-                                            )}
-                                        </div>
-
-                                        {/* Quote error */}
-                                        {quoteError && (
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 12px', background: 'rgba(220,53,69,0.06)', border: '1px solid rgba(220,53,69,0.15)', borderRadius: '2px', color: '#DC3545', fontSize: '10px', fontFamily: "'JetBrains Mono', monospace", marginTop: '8px' }}>
-                                                <AlertTriangle size={11} />
-                                                {quoteError}
+                                                {i < steps.length - 1 && <div style={{ width: '1px', height: '14px', background: isComplete ? t.green : t.border, transition: 'background 0.3s ease' }} />}
                                             </div>
-                                        )}
-
-                                        {/* Progress tracker */}
-                                        {(swapStep === 'shielding' || swapStep === 'unshielding' || swapStep === 'done' || swapStep === 'error') && (
-                                            <div style={{ background: t.cardBg, border: `1px solid ${t.border}`, borderRadius: '4px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
-                                                {(() => {
-                                                    const steps = [
-                                                        { label: 'SHIELD SOL', key: 'shield-0' },
-                                                        { label: `UNSHIELD ${tokenSymbol}`, key: 'unshield-0' },
-                                                        { label: 'COMPLETE', key: 'complete' },
-                                                    ]
-                                                    let activeIdx = 0
-                                                    if (swapStep === 'shielding') activeIdx = 0
-                                                    else if (swapStep === 'unshielding') activeIdx = 1
-                                                    else if (swapStep === 'done') activeIdx = steps.length - 1
-                                                    const isFailed = swapStep === 'error'
-                                                    return (
-                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
-                                                            {steps.map((step, i) => {
-                                                                const isComplete = !isFailed && i < activeIdx
-                                                                const isActive = !isFailed && i === activeIdx
-                                                                return (
-                                                                    <div key={step.key} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '16px' }}>
-                                                                            <div style={{
-                                                                                width: isActive ? '10px' : '8px', height: isActive ? '10px' : '8px', borderRadius: '1px',
-                                                                                background: (isFailed && i === activeIdx) ? '#DC3545' : isComplete ? t.green : isActive ? t.accent : t.inputBg,
-                                                                                border: `1px solid ${(isFailed && i === activeIdx) ? '#DC3545' : isComplete ? t.green : isActive ? t.accent : t.cardBorder}`,
-                                                                                transition: 'all 0.3s ease', animation: isActive ? 'pulse 1.5s ease-in-out infinite' : 'none',
-                                                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                                                            }}>
-                                                                                {isComplete && <Check size={5} style={{ color: '#fff' }} />}
-                                                                            </div>
-                                                                            {i < steps.length - 1 && <div style={{ width: '1px', height: '14px', background: isComplete ? t.green : t.border, transition: 'background 0.3s ease' }} />}
-                                                                        </div>
-                                                                        <span style={{ fontSize: '10px', fontWeight: isActive ? 700 : 500, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.06em', color: (isFailed && i === activeIdx) ? '#DC3545' : isComplete ? t.green : isActive ? t.text : t.textMuted }}>
-                                                                            {step.label}
-                                                                        </span>
-                                                                    </div>
-                                                                )
-                                                            })}
-                                                        </div>
-                                                    )
-                                                })()}
-                                                {activeSwap && (
-                                                    <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: `1px solid ${t.border}`, paddingTop: '8px' }}>
-                                                        <span style={{ fontSize: '9px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>STATUS</span>
-                                                        <span style={{ fontSize: '10px', color: swapStep === 'done' ? t.green : swapStep === 'error' ? '#DC3545' : t.accent, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>
-                                                            {activeSwap.statusLabel}
-                                                        </span>
-                                                    </div>
-                                                )}
-                                                {swapError && (
-                                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', padding: '8px 10px', background: 'rgba(220,53,69,0.06)', border: '1px solid rgba(220,53,69,0.12)', borderRadius: '2px', color: '#DC3545', fontSize: '10px', lineHeight: 1.5, fontFamily: "'JetBrains Mono', monospace" }}>
-                                                        <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: '1px' }} />
-                                                        <span>{swapError}</span>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        )}
-
-                                        {/* Action button */}
-                                        <div style={{ marginTop: '10px' }}>
-                                            {swapStep === 'confirming' && quoteData ? (
-                                                <button onClick={handleExecuteSwap} style={{ ...smallBtnStyle, width: '100%', padding: '12px', fontSize: '11px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.08em', textTransform: 'uppercase', background: 'linear-gradient(135deg, #DC3545 0%, #a02030 100%)', color: '#fff', border: '1px solid rgba(220,53,69,0.5)', borderRadius: '2px', cursor: 'pointer' }}>
-                                                    Confirm Private Swap
-                                                </button>
-                                            ) : (swapStep === 'done' || swapStep === 'error') ? (
-                                                <button onClick={resetSwap} style={{ ...smallBtnStyle, width: '100%', padding: '12px', fontSize: '11px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.08em', textTransform: 'uppercase', background: t.inputBg, color: t.text, border: `1px solid ${t.cardBorder}`, borderRadius: '2px', cursor: 'pointer' }}>
-                                                    New Swap
-                                                </button>
-                                            ) : swapStep === 'idle' || swapStep === 'quoting' ? (
-                                                <button onClick={handleGetQuote} disabled={quoteLoading || !swapAmount || parseFloat(swapAmount) <= 0}
-                                                    style={{ ...smallBtnStyle, width: '100%', padding: '12px', fontSize: '11px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.08em', textTransform: 'uppercase', background: (!swapAmount || parseFloat(swapAmount) <= 0) ? t.inputBg : 'linear-gradient(135deg, #DC3545 0%, #a02030 100%)', color: (!swapAmount || parseFloat(swapAmount) <= 0) ? t.textDim : '#fff', border: `1px solid ${(!swapAmount || parseFloat(swapAmount) <= 0) ? t.cardBorder : 'rgba(220,53,69,0.5)'}`, borderRadius: '2px', cursor: (!swapAmount || parseFloat(swapAmount) <= 0) ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
-                                                    {quoteLoading ? (<><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Getting Quote...</>) : 'Get Quote'}
-                                                </button>
-                                            ) : null}
-                                        </div>
-                                    </div>
-                                </div>
-
-                                {/* ── RIGHT PANEL: DESTINATION ── */}
-                                <div
-                                    onDragOver={(e) => handleDragOver(e, 'dest')}
-                                    onDragLeave={() => setDragOverZone(null)}
-                                    onDrop={(e) => handleDrop(e, 'dest')}
-                                    style={{
-                                        flex: 1, display: 'flex', flexDirection: 'column',
-                                        background: dragOverZone === 'dest' ? t.dropHighlight : 'transparent',
-                                        transition: 'background 0.2s ease', overflow: 'hidden',
-                                    }}
-                                >
-                                    {/* Destination header */}
-                                    <div style={{ padding: '14px 20px', borderBottom: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                        <span style={{ fontSize: '11px', fontWeight: 700, color: t.green || '#22c55e', letterSpacing: '0.1em', fontFamily: "'JetBrains Mono', monospace", textTransform: 'uppercase' }}>Destination</span>
-                                    </div>
-
-                                    {/* Destination wallets list */}
-                                    <div style={{ flex: 1, overflowY: 'auto' }}>
-                                        {destWallets.length === 0 && !manualDestAddr ? (
-                                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '32px 20px', gap: '8px', height: '100%', minHeight: '80px' }}>
-                                                <ArrowDownUp size={18} style={{ color: t.textDim, opacity: 0.5 }} />
-                                                <p style={{ fontSize: '11px', color: t.textMuted, margin: 0, textAlign: 'center', lineHeight: 1.5 }}>
-                                                    Shift+click wallets above<br />to select as destination
-                                                </p>
-                                            </div>
-                                        ) : (
-                                            <>
-                                                {destWallets.map((w) => (
-                                                    <div key={w.id} style={{ display: 'flex', alignItems: 'center', padding: '10px 16px', borderBottom: `1px solid ${t.border}`, gap: '8px' }}>
-                                                        <span style={{ fontSize: '11px', fontWeight: 600, color: t.green || '#22c55e', fontFamily: "'JetBrains Mono', monospace", flexShrink: 0, width: '20px' }}>
-                                                            #{wallets.findIndex(ww => ww.id === w.id) + 1}
-                                                        </span>
-                                                        <span style={{ fontSize: '12px', fontWeight: 600, color: t.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.name}</span>
-                                                        <span style={{ fontSize: '11px', fontWeight: 500, color: t.textDim, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>{(w.balance || 0).toFixed(4)}</span>
-                                                        <button onClick={() => removeFromZone(w.id, 'dest')} title="Remove" style={{ ...iconBtnStyle, flexShrink: 0, padding: '2px' }}><X size={14} /></button>
-                                                    </div>
-                                                ))}
-                                                {manualDestAddr && (
-                                                    <div style={{ display: 'flex', alignItems: 'center', padding: '10px 16px', borderBottom: `1px solid ${t.border}`, gap: '8px' }}>
-                                                        <span style={{ fontSize: '11px', fontWeight: 600, color: t.green || '#22c55e', fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>✦</span>
-                                                        <span style={{ fontSize: '11px', color: t.text, fontFamily: "'JetBrains Mono', monospace", flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{manualDestAddr.slice(0, 8)}...{manualDestAddr.slice(-6)}</span>
-                                                        <button onClick={() => setManualDestAddr('')} title="Remove" style={{ ...iconBtnStyle, flexShrink: 0, padding: '2px' }}><X size={14} /></button>
-                                                    </div>
-                                                )}
-                                            </>
-                                        )}
-                                    </div>
-
-                                    {/* RECEIVE section — bottom of right panel */}
-                                    <div style={{ padding: '16px', borderTop: `1px solid ${t.border}`, background: t.cardBg, flexShrink: 0 }}>
-                                        <span style={{ fontSize: '9px', fontWeight: 700, color: t.textDim, letterSpacing: '0.12em', fontFamily: "'JetBrains Mono', monospace", display: 'block', marginBottom: '8px' }}>RECEIVE TOKEN</span>
-
-                                        {/* Token grid — 3 col */}
-                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', marginBottom: '10px' }}>
-                                            {SUPPORTED_TOKENS.map(tk => {
-                                                const isActive = selectedToken === tk.name
-                                                return (
-                                                    <button key={tk.name}
-                                                        onClick={() => { setSelectedToken(tk.name); setQuoteData(null); setSwapStep('idle'); setQuoteError('') }}
-                                                        style={{
-                                                            display: 'flex', alignItems: 'center', gap: '6px',
-                                                            padding: '6px 8px', borderRadius: '2px',
-                                                            border: isActive ? `1px solid ${t.accent}` : `1px solid ${t.cardBorder}`,
-                                                            background: isActive ? t.accentBg : t.inputBg,
-                                                            cursor: 'pointer', transition: 'all 0.15s ease',
-                                                            boxShadow: isActive ? `inset 0 0 0 1px ${t.accent}` : 'none',
-                                                        }}
-                                                    >
-                                                        <img src={TOKEN_IMAGES[tk.name]} alt={tk.name} style={{ width: '16px', height: '16px', borderRadius: '2px', flexShrink: 0 }} />
-                                                        <span style={{ fontSize: '10px', fontWeight: isActive ? 700 : 500, fontFamily: "'JetBrains Mono', monospace", color: isActive ? t.accent : t.textMuted, letterSpacing: '0.04em' }}>
-                                                            {tk.name.toUpperCase()}
-                                                        </span>
-                                                    </button>
-                                                )
-                                            })}
-                                        </div>
-
-                                        {/* Estimated receive */}
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: t.inputBg, border: `1px solid ${t.cardBorder}`, borderRadius: '2px', padding: '8px 10px', marginBottom: '8px' }}>
-                                            <img src={TOKEN_IMAGES[selectedToken]} alt={selectedToken} style={{ width: '24px', height: '24px', borderRadius: '2px' }} />
-                                            <span style={{ fontSize: '12px', fontWeight: 700, color: t.text, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>{tokenSymbol}</span>
-                                            <span style={{ flex: 1, textAlign: 'right', fontSize: '18px', fontWeight: 600, color: quoteData ? (t.green || '#22c55e') : t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>
-                                                {quoteData ? `≈ ${quoteData.amountOut}` : '—'}
+                                            <span style={{ fontSize: '10px', fontWeight: isActive ? 700 : 500, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.06em', color: (isFailed && i === activeIdx) ? '#DC3545' : isComplete ? t.green : isActive ? t.text : t.textMuted }}>
+                                                {step.label}
                                             </span>
                                         </div>
-
-                                        {/* Quote preview */}
-                                        {quoteData && swapStep === 'confirming' && (
-                                            <div style={{ background: t.statsBg, border: `1px solid ${t.border}`, borderRadius: '4px', padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '8px' }}>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                    <span style={{ fontSize: '9px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>FEE (EST.)</span>
-                                                    <span style={{ fontSize: '10px', color: t.textDim, fontFamily: "'JetBrains Mono', monospace" }}>~{quoteData.estimatedFee} {quoteData.tokenSymbol}</span>
-                                                </div>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                    <span style={{ fontSize: '9px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>METHOD</span>
-                                                    <span style={{ fontSize: '10px', color: t.accent, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>ZK PRIVACY</span>
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        {/* Manual address input */}
-                                        {destWallets.length === 0 && (
-                                            <input
-                                                type="text" value={manualDestAddr}
-                                                onChange={(e) => { setManualDestAddr(e.target.value); setQuoteData(null); setSwapStep('idle') }}
-                                                placeholder="Or paste custom address..."
-                                                style={{ width: '100%', background: t.inputBg, border: `1px solid ${t.cardBorder}`, borderRadius: '2px', padding: '8px 10px', color: t.text, fontSize: '11px', fontFamily: "'JetBrains Mono', monospace", outline: 'none', boxSizing: 'border-box' }}
-                                            />
-                                        )}
-                                    </div>
-                                </div>
+                                    )
+                                })}
                             </div>
+                        )
+                    })()}
+                    {activeSwap && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: `1px solid ${t.border}`, paddingTop: '8px' }}>
+                            <span style={{ fontSize: '9px', color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>STATUS</span>
+                            <span style={{ fontSize: '10px', color: swapStep === 'done' ? t.green : swapStep === 'error' ? '#DC3545' : t.accent, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>
+                                {activeSwap.statusLabel}
+                            </span>
+                        </div>
+                    )}
+                    {swapError && (
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', padding: '8px 10px', background: 'rgba(220,53,69,0.06)', border: '1px solid rgba(220,53,69,0.12)', borderRadius: '2px', color: '#DC3545', fontSize: '10px', lineHeight: 1.5, fontFamily: "'JetBrains Mono', monospace" }}>
+                            <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: '1px' }} />
+                            <span>{swapError}</span>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Action button */}
+            <div style={{ marginTop: '8px' }}>
+                {swapStep === 'confirming' && quoteData ? (
+                    <button onClick={handleExecuteSwap} style={{ ...smallBtnStyle, width: '100%', padding: '12px', fontSize: '11px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.08em', textTransform: 'uppercase', background: 'linear-gradient(135deg, #DC3545 0%, #a02030 100%)', color: '#fff', border: '1px solid rgba(220,53,69,0.5)', borderRadius: '2px', cursor: 'pointer' }}>
+                        Confirm Private Swap
+                    </button>
+                ) : (swapStep === 'done' || swapStep === 'error') ? (
+                    <button onClick={resetSwap} style={{ ...smallBtnStyle, width: '100%', padding: '12px', fontSize: '11px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.08em', textTransform: 'uppercase', background: t.inputBg, color: t.text, border: `1px solid ${t.cardBorder}`, borderRadius: '2px', cursor: 'pointer' }}>
+                        New Swap
+                    </button>
+                ) : swapStep === 'idle' || swapStep === 'quoting' ? (
+                    <button onClick={handleGetQuote} disabled={quoteLoading || !swapAmount || parseFloat(swapAmount) <= 0}
+                        style={{ ...smallBtnStyle, width: '100%', padding: '12px', fontSize: '11px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.08em', textTransform: 'uppercase', background: (!swapAmount || parseFloat(swapAmount) <= 0) ? t.inputBg : 'linear-gradient(135deg, #DC3545 0%, #a02030 100%)', color: (!swapAmount || parseFloat(swapAmount) <= 0) ? t.textDim : '#fff', border: `1px solid ${(!swapAmount || parseFloat(swapAmount) <= 0) ? t.cardBorder : 'rgba(220,53,69,0.5)'}`, borderRadius: '2px', cursor: (!swapAmount || parseFloat(swapAmount) <= 0) ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                        {quoteLoading ? (<><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Getting Quote...</>) : 'Get Quote'}
+                    </button>
+                ) : null}
+            </div>
+        </div>
+    </div>
+
+    {/* ── RIGHT PANEL: DESTINATION WALLETS ── */}
+    <div
+        onDragOver={(e) => handleDragOver(e, 'dest')}
+        onDragLeave={() => setDragOverZone(null)}
+        onDrop={(e) => handleDrop(e, 'dest')}
+        style={{
+            width: '240px', minWidth: '200px', display: 'flex', flexDirection: 'column',
+            borderLeft: `1px solid ${t.border}`,
+            background: dragOverZone === 'dest' ? t.dropHighlight : 'transparent',
+            transition: 'background 0.2s ease', overflow: 'hidden', flexShrink: 0,
+        }}
+    >
+        <div style={{ padding: '14px 16px', borderBottom: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: '11px', fontWeight: 700, color: t.green || '#22c55e', letterSpacing: '0.1em', fontFamily: "'JetBrains Mono', monospace", textTransform: 'uppercase' }}>Destination</span>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+            {destWallets.length === 0 && !manualDestAddr ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '32px 16px', gap: '8px', height: '100%', minHeight: '80px' }}>
+                    <ArrowDownUp size={18} style={{ color: t.textDim, opacity: 0.5 }} />
+                    <p style={{ fontSize: '10px', color: t.textMuted, margin: 0, textAlign: 'center', lineHeight: 1.5 }}>
+                        Shift+click wallets<br />above for destination
+                    </p>
+                </div>
+            ) : (
+                <>
+                    {destWallets.map((w) => (
+                        <div key={w.id} style={{ display: 'flex', alignItems: 'center', padding: '10px 12px', borderBottom: `1px solid ${t.border}`, gap: '6px' }}>
+                            <span style={{ fontSize: '10px', fontWeight: 600, color: t.green || '#22c55e', fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>
+                                #{wallets.findIndex(ww => ww.id === w.id) + 1}
+                            </span>
+                            <span style={{ fontSize: '11px', fontWeight: 600, color: t.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.name}</span>
+                            <span style={{ fontSize: '10px', color: t.textDim, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>{(w.balance || 0).toFixed(4)}</span>
+                            <button onClick={() => removeFromZone(w.id, 'dest')} title="Remove" style={{ ...iconBtnStyle, flexShrink: 0, padding: '2px' }}><X size={12} /></button>
+                        </div>
+                    ))}
+                    {manualDestAddr && (
+                        <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px', borderBottom: `1px solid ${t.border}`, gap: '6px' }}>
+                            <span style={{ fontSize: '10px', fontWeight: 600, color: t.green || '#22c55e', fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>✦</span>
+                            <span style={{ fontSize: '10px', color: t.text, fontFamily: "'JetBrains Mono', monospace", flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{manualDestAddr.slice(0, 8)}...{manualDestAddr.slice(-6)}</span>
+                            <button onClick={() => setManualDestAddr('')} title="Remove" style={{ ...iconBtnStyle, flexShrink: 0, padding: '2px' }}><X size={12} /></button>
+                        </div>
+                    )}
+                </>
+            )}
+        </div>
+    </div>
+</div>
+
                         </main>
                     )}
             </div>
