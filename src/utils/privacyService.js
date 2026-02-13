@@ -6,7 +6,7 @@
    bypassing the PrivacyCash class (which has Node-only imports).
    ──────────────────────────────────────── */
 
-import { Connection, Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js'
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js'
 import {
     deposit,
     withdraw,
@@ -193,6 +193,9 @@ export const SUPPORTED_TOKENS = privacyTokens
  * @returns {{ tx: string }}
  */
 export async function shieldSPL(client, mintAddress, amount, onStatus) {
+    // Ensure mintAddress is a PublicKey object (SDK requires it)
+    const mint = typeof mintAddress === 'string' ? new PublicKey(mintAddress) : mintAddress
+
     onStatus?.(PRIVACY_STATUS.SHIELDING)
 
     try {
@@ -204,7 +207,7 @@ export async function shieldSPL(client, mintAddress, amount, onStatus) {
 
         const result = await depositSPL({
             lightWasm,
-            mintAddress,
+            mintAddress: mint,
             amount,
             connection: client.connection,
             encryptionService: client.encryptionService,
@@ -237,6 +240,9 @@ export async function shieldSPL(client, mintAddress, amount, onStatus) {
  * @returns {{ tx, recipient, base_units, fee_base_units, isPartial }}
  */
 export async function unshieldSPL(client, mintAddress, amount, recipientAddress, onStatus) {
+    // Ensure mintAddress is a PublicKey object (SDK requires it)
+    const mint = typeof mintAddress === 'string' ? new PublicKey(mintAddress) : mintAddress
+
     onStatus?.(PRIVACY_STATUS.UNSHIELDING)
 
     try {
@@ -248,7 +254,7 @@ export async function unshieldSPL(client, mintAddress, amount, recipientAddress,
 
         const result = await withdrawSPL({
             lightWasm,
-            mintAddress,
+            mintAddress: mint,
             amount,
             connection: client.connection,
             encryptionService: client.encryptionService,
@@ -275,12 +281,15 @@ export async function unshieldSPL(client, mintAddress, amount, recipientAddress,
  * @returns {number} — balance in base units
  */
 export async function getPrivateBalanceSPL(client, mintAddress) {
+    // Ensure mintAddress is a PublicKey object
+    const mint = typeof mintAddress === 'string' ? new PublicKey(mintAddress) : mintAddress
+
     const utxos = await getUtxosSPL({
         publicKey: client.publicKey,
         connection: client.connection,
         encryptionService: client.encryptionService,
         storage: browserStorage,
-        mintAddress,
+        mintAddress: mint,
     })
 
     return getBalanceFromUtxosSPL(utxos)
